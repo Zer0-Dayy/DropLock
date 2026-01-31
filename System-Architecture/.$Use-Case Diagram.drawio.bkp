@@ -1,0 +1,166 @@
+<mxfile host="Electron" agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) draw.io/29.3.6 Chrome/140.0.7339.249 Electron/38.8.0 Safari/537.36" version="29.3.6">
+  <diagram name="Page-1" id="f-LIYRy9lEPFoPJWXKcl">
+    <mxGraphModel dx="2066" dy="1201" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="WqeRntDSsgH2LomhoO2H-1" parent="1" style="shape=umlActor;html=1;verticalLabelPosition=bottom;verticalAlign=top;align=center;" value="User" vertex="1">
+          <mxGeometry height="60" width="30" x="40" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-3" parent="1" style="shape=rect;html=1;verticalAlign=top;fontStyle=1;whiteSpace=wrap;align=center;" value="DropLock" vertex="1">
+          <mxGeometry height="820" width="710" x="120" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-5" parent="1" style="shape=umlActor;html=1;verticalLabelPosition=bottom;verticalAlign=top;align=center;" value="Courier" vertex="1">
+          <mxGeometry height="60" width="30" x="40" y="420" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-7" parent="1" style="shape=umlActor;html=1;verticalLabelPosition=bottom;verticalAlign=top;align=center;" value="Supervisor" vertex="1">
+          <mxGeometry height="60" width="30" x="40" y="600" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-10" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Book A Locker" vertex="1">
+          <mxGeometry height="60" width="120" x="197.5" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-12" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Generate Unique QR Code" vertex="1">
+          <mxGeometry height="60" width="135" x="400" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-13" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Receives Unique QR Code" vertex="1">
+          <mxGeometry height="60" width="135" x="191.25" y="425" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-14" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-10" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-12" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="380" as="sourcePoint" />
+            <mxPoint x="480" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-17" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-5" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-13" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-19" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-1" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-10" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-20" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-13" style="edgeStyle=none;html=1;startArrow=open;endArrow=none;startSize=12;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="WqeRntDSsgH2LomhoO2H-12" value="&amp;lt;&amp;lt;extend&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="380" as="sourcePoint" />
+            <mxPoint x="480" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-21" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-1" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;" target="WqeRntDSsgH2LomhoO2H-13" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-23" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="View Booking Status" vertex="1">
+          <mxGeometry height="60" width="120" x="590" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-24" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-10" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;" target="WqeRntDSsgH2LomhoO2H-23" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="380" as="sourcePoint" />
+            <mxPoint x="480" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-25" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Claim Delivery With Unique QR Code" vertex="1">
+          <mxGeometry height="60" width="120" x="200" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-27" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-1" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-25" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-30" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Receive&lt;div&gt;&amp;nbsp;Warning And Delivery Notifications&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="130" x="192.5" y="230" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-31" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-1" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-30" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-32" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-30" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0.5;entryDx=0;entryDy=0;entryPerimeter=0;" target="WqeRntDSsgH2LomhoO2H-7" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-33" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Deposit Package With Unique QR Code" vertex="1">
+          <mxGeometry height="70" width="137.5" x="188.75" y="510" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-34" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Confirm Correct Deposit" vertex="1">
+          <mxGeometry height="60" width="120" x="440" y="485" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-35" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-5" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-33" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-36" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-33" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-34" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="380" as="sourcePoint" />
+            <mxPoint x="480" y="380" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-37" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Manage Lockers" vertex="1">
+          <mxGeometry height="60" width="120" x="200" y="620" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-38" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-7" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-37" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="320" y="260" as="sourcePoint" />
+            <mxPoint x="480" y="260" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-39" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Add New Locker" vertex="1">
+          <mxGeometry height="60" width="120" x="430" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-40" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Remove Locker For Maintenance" vertex="1">
+          <mxGeometry height="60" width="120" x="425" y="670" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-41" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Collect Information" vertex="1">
+          <mxGeometry height="60" width="120" x="415" y="750" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-42" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Process Information Using Local LLM" vertex="1">
+          <mxGeometry height="60" width="140" x="610" y="750" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-44" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-37" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-39" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="660" y="550" as="sourcePoint" />
+            <mxPoint x="820" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-45" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-37" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-40" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="660" y="550" as="sourcePoint" />
+            <mxPoint x="820" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-46" parent="1" style="shape=ellipse;html=1;strokeWidth=3;fontStyle=1;whiteSpace=wrap;align=center;perimeter=ellipsePerimeter;" value="Monitor Lockers" vertex="1">
+          <mxGeometry height="60" width="120" x="206.25" y="750" as="geometry" />
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-47" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-7" style="edgeStyle=none;html=1;endArrow=none;verticalAlign=bottom;rounded=0;exitX=0.5;exitY=0.5;exitDx=0;exitDy=0;exitPerimeter=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-46" value="">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="660" y="550" as="sourcePoint" />
+            <mxPoint x="820" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-48" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-46" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-41" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="660" y="550" as="sourcePoint" />
+            <mxPoint x="820" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="WqeRntDSsgH2LomhoO2H-49" edge="1" parent="1" source="WqeRntDSsgH2LomhoO2H-41" style="edgeStyle=none;html=1;endArrow=open;verticalAlign=bottom;dashed=1;labelBackgroundColor=none;rounded=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="WqeRntDSsgH2LomhoO2H-42" value="&amp;lt;&amp;lt;include&amp;gt;&amp;gt;">
+          <mxGeometry relative="1" width="160" as="geometry">
+            <mxPoint x="660" y="550" as="sourcePoint" />
+            <mxPoint x="820" y="550" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+
+# Environment variables
+.env
+
+# Firebase service account
+firebase.json
+Keys/
+*.json
+
+# Streamlit cache
+.streamlit/
+
+# OS
+.DS_Store

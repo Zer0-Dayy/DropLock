@@ -10,13 +10,16 @@ venv/
 # Environment variables
 .env
 
-# Firebase service account
+# Firebase service account and local secrets
 firebase.json
 Keys/
-*.json
+Admin-Dashboard/email_config.json
 
 # Streamlit cache
 .streamlit/
+
+# Logs
+Admin-Dashboard/logs/
 
 # OS
 .DS_Store

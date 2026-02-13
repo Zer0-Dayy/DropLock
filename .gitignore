@@ -23,3 +23,7 @@ Admin-Dashboard/logs/
 
 # OS
 .DS_Store
+
+#Local Config
+email_config.json
+.env

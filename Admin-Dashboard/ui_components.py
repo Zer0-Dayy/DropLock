@@ -15,6 +15,46 @@ STATE_COLORS = {
 }
 
 
+def inject_global_styles() -> None:
+    st.markdown(
+        """
+        <style>
+            .block-container {padding-top: 1.2rem;}
+            .droplock-hero {
+                border-radius: 14px;
+                padding: 1.2rem 1.4rem;
+                margin-bottom: 0.8rem;
+                background: linear-gradient(120deg, #1d3557, #457b9d 60%, #a8dadc);
+                color: white;
+                box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
+            }
+            .droplock-hero h2 {margin: 0;}
+            .droplock-hero p {margin: .35rem 0 0 0; opacity: .95;}
+            .droplock-panel {
+                border: 1px solid rgba(120, 120, 120, 0.25);
+                border-radius: 12px;
+                padding: 0.8rem;
+                margin-bottom: 0.65rem;
+                background-color: rgba(250, 250, 250, 0.03);
+            }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def hero(title: str, subtitle: str) -> None:
+    st.markdown(
+        f"""
+        <div class="droplock-hero">
+            <h2>{title}</h2>
+            <p>{subtitle}</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def render_metrics(metrics: dict[str, int]) -> None:
     cols = st.columns(5)
     cols[0].metric("Total Lockers", metrics.get("total", 0))

@@ -53,7 +53,7 @@ def login_view() -> None:
         st.image(
             "https://images.unsplash.com/photo-1556157382-97eda2d62296?auto=format&fit=crop&w=1200&q=80",
             caption="Control room vibe (stock image, replace as needed)",
-            use_container_width=True,
+            width="stretch",
         )
 
     with col2:
@@ -173,14 +173,14 @@ def overview_page(locker_views: list[LockerView], role: str, sector_id: str | No
     alert_rows = ALERTS.list_alerts().values()
     trend: dict[str, dict[str, int]] = {}
     for i in range(6, -1, -1):
-        d = (dt.datetime.utcnow() - dt.timedelta(days=i)).date().isoformat()
+        d = (dt.datetime.now(dt.UTC) - dt.timedelta(days=i)).date().isoformat()
         trend[d] = {"tamper": 0, "offline": 0}
     for alert in alert_rows:
         safe = alert or {}
         created_at = safe.get("createdAt")
         if not created_at:
             continue
-        day = dt.datetime.utcfromtimestamp(created_at / 1000).date().isoformat()
+        day = dt.datetime.fromtimestamp(created_at / 1000, tz=dt.UTC).date().isoformat()
         if day not in trend:
             continue
         if safe.get("type") == "TAMPER":
@@ -190,7 +190,7 @@ def overview_page(locker_views: list[LockerView], role: str, sector_id: str | No
 
     st.markdown("#### Tamper / Offline Trends (7 days)")
     chart_rows = [{"date": day, "tamper": vals["tamper"], "offline": vals["offline"]} for day, vals in trend.items()]
-    st.line_chart(chart_rows, x="date", y=["tamper", "offline"], use_container_width=True)
+    st.line_chart(chart_rows, x="date", y=["tamper", "offline"], width="stretch")
 
 
 def sectors_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str | None) -> None:
@@ -422,7 +422,7 @@ def activity_page(role: str, sector_id: str | None) -> None:
     if command_rows:
         command_rows = sorted(command_rows, key=lambda c: c.get("ts") or 0, reverse=True)[:30]
         st.markdown("#### Latest admin commands")
-        st.dataframe(command_rows, use_container_width=True)
+        st.dataframe(command_rows, width="stretch")
     else:
         st.info("No command history found")
 

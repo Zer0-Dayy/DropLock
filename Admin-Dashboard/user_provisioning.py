@@ -21,7 +21,7 @@ def create_auth_user(email: str, temp_password: str) -> str:
     return user_record.uid
 
 
-def _send_admin_welcome_email(email: str, display_name: str, sector_id: str) -> None:
+def _send_admin_welcome_email(email: str, display_name: str, sector_id: str, temp_password: str) -> None:
     if not SMTP.enabled:
         return
     subject = "[DropLock] Admin profile created"
@@ -29,7 +29,21 @@ def _send_admin_welcome_email(email: str, display_name: str, sector_id: str) -> 
         f"Hello {display_name or 'Admin'},\n\n"
         "Your DropLock admin profile is now active.\n"
         f"Assigned sector: {sector_id}\n"
+        f"Temporary password: {temp_password}\n"
         "Please sign in to the dashboard and change your temporary password immediately.\n"
+    )
+    SMTP.send_alert_email(to_email=email, subject=subject, body=body)
+
+
+def _send_password_reset_email(email: str, display_name: str, temp_password: str) -> None:
+    if not SMTP.enabled:
+        return
+    subject = "[DropLock] Admin password reset"
+    body = (
+        f"Hello {display_name or 'Admin'},\n\n"
+        "A temporary password has been generated for your DropLock admin account.\n"
+        f"Temporary password: {temp_password}\n"
+        "Please sign in and change your password immediately.\n"
     )
     SMTP.send_alert_email(to_email=email, subject=subject, body=body)
 
@@ -68,7 +82,7 @@ def provision_admin(email: str, temp_password: str, sector_id: str, display_name
         }
     )
     db.reference(f"sectors/{sector_id}/adminUids/{uid}").set(True)
-    _send_admin_welcome_email(email, display_name, sector_id)
+    _send_admin_welcome_email(email, display_name, sector_id, temp_password)
     return uid
 
 
@@ -94,4 +108,10 @@ def reset_admin_password(uid: str) -> str:
     init_firebase()
     temp_password = _generate_temp_password()
     auth.update_user(uid, password=temp_password)
+    profile = db.reference(f"profiles/{uid}").get() or {}
+    _send_password_reset_email(
+        profile.get("email", ""),
+        profile.get("displayName") or uid,
+        temp_password,
+    )
     return temp_password

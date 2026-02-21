@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import datetime as dt
 import io
 import logging
 import os
@@ -17,7 +18,7 @@ from admin_ops import assert_super_admin, get_profile
 from alert_service import AlertService
 from authentication import sign_in
 from locker_actions import admin_request_open, admin_set_state, super_create_locker, super_delete_locker
-from locker_repo import load_all_sectors, load_lockers, update_sector_config
+from locker_repo import create_sector, load_all_sectors, load_lockers, update_sector_config
 from metrics import LOCKER_STATES, DEFAULT_HEARTBEAT_TIMEOUT_SEC, LockerView, build_locker_view, compute_sector_metrics
 from ui_components import format_state, format_ts, hero, inject_global_styles, render_metrics, tamper_badge
 from user_provisioning import list_admin_profiles, provision_admin, reset_admin_password, set_admin_status
@@ -40,6 +41,7 @@ def ensure_session() -> None:
     st.session_state.setdefault("uid", None)
     st.session_state.setdefault("profile", None)
     st.session_state.setdefault("locker_signals", {})
+    st.session_state.setdefault("theme", "dark")
 
 
 def login_view() -> None:
@@ -168,6 +170,28 @@ def overview_page(locker_views: list[LockerView], role: str, sector_id: str | No
         st.write("💡 Tip: Use **Operations** page for bulk actions and exports.")
         st.markdown("</div>", unsafe_allow_html=True)
 
+    alert_rows = ALERTS.list_alerts().values()
+    trend: dict[str, dict[str, int]] = {}
+    for i in range(6, -1, -1):
+        d = (dt.datetime.utcnow() - dt.timedelta(days=i)).date().isoformat()
+        trend[d] = {"tamper": 0, "offline": 0}
+    for alert in alert_rows:
+        safe = alert or {}
+        created_at = safe.get("createdAt")
+        if not created_at:
+            continue
+        day = dt.datetime.utcfromtimestamp(created_at / 1000).date().isoformat()
+        if day not in trend:
+            continue
+        if safe.get("type") == "TAMPER":
+            trend[day]["tamper"] += 1
+        if safe.get("type") == "OFFLINE":
+            trend[day]["offline"] += 1
+
+    st.markdown("#### Tamper / Offline Trends (7 days)")
+    chart_rows = [{"date": day, "tamper": vals["tamper"], "offline": vals["offline"]} for day, vals in trend.items()]
+    st.line_chart(chart_rows, x="date", y=["tamper", "offline"], use_container_width=True)
+
 
 def sectors_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str | None) -> None:
     hero("🏙️ Sector Configuration", "Tune heartbeat, pulse timing, and timezone configuration.")
@@ -194,22 +218,40 @@ def sectors_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str | 
         update_sector_config(sector_id, {"heartbeatTimeoutSec": int(heartbeat), "openPulseMs": int(pulse), "timezone": timezone})
         st.success("Sector config updated")
 
+    st.markdown("#### Create Sector")
+    with st.form("create_sector"):
+        new_sector = st.text_input("Sector ID")
+        new_timezone = st.text_input("Timezone", value="UTC")
+        new_heartbeat = st.number_input("Heartbeat timeout (sec)", min_value=10, value=120)
+        new_open_pulse = st.number_input("Open pulse (ms)", min_value=50, value=500)
+        create_submit = st.form_submit_button("Create Sector")
+    if create_submit:
+        assert_super_admin(uid)
+        create_sector(new_sector.strip(), new_timezone.strip(), int(new_heartbeat), int(new_open_pulse))
+        st.success(f"Sector '{new_sector}' created")
+        st.rerun()
 
-def operations_page(uid: str, role: str, sector_id: str | None, locker_views: list[LockerView]) -> None:
+
+def operations_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str | None, locker_views: list[LockerView]) -> None:
     hero("🛠️ Locker Operations", "Filter, update locker state, request OPEN, and export inventory data.")
     if not sector_id:
         st.info("No sector selected")
         return
 
+    effective_sector_id = sector_id
     if role == "superAdmin":
+        effective_sector_id = st.selectbox("Operations Sector", sorted(sectors.keys())) if sectors else None
+        locker_views = _build_locker_views(effective_sector_id, sectors) if effective_sector_id else []
+
+    if role == "superAdmin" and effective_sector_id:
         col1, col2, col3 = st.columns([2, 1, 1])
         locker_id = col1.text_input("Locker ID")
         if col2.button("Create"):
-            super_create_locker(uid, sector_id, locker_id.strip())
+            super_create_locker(uid, effective_sector_id, locker_id.strip())
             st.success("Locker created")
             st.rerun()
         if col3.button("Delete"):
-            super_delete_locker(uid, sector_id, locker_id.strip())
+            super_delete_locker(uid, effective_sector_id, locker_id.strip())
             st.success("Locker deleted")
             st.rerun()
 
@@ -254,21 +296,21 @@ def operations_page(uid: str, role: str, sector_id: str | None, locker_views: li
             "state",
             LOCKER_STATES,
             index=LOCKER_STATES.index(locker.state) if locker.state in LOCKER_STATES else 0,
-            key=f"state_{sector_id}_{locker.locker_id}",
+            key=f"state_{effective_sector_id}_{locker.locker_id}",
             label_visibility="collapsed",
         )
 
         action_cols = st.columns([1, 1, 4])
         if action_cols[0].button("Apply", key=f"apply_{locker.locker_id}"):
-            admin_set_state(uid, sector_id, locker.locker_id, new_state)
+            admin_set_state(uid, effective_sector_id, locker.locker_id, new_state)
             st.success(f"{locker.locker_id} updated")
             st.rerun()
         if action_cols[1].button("OPEN", key=f"open_{locker.locker_id}"):
-            cmd_id = admin_request_open(uid, sector_id, locker.locker_id)
+            cmd_id = admin_request_open(uid, effective_sector_id, locker.locker_id)
             st.success(f"OPEN requested ({cmd_id})")
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.download_button("Export CSV", csv_buffer.getvalue(), file_name=f"lockers_{sector_id}.csv", mime="text/csv")
+    st.download_button("Export CSV", csv_buffer.getvalue(), file_name=f"lockers_{effective_sector_id}.csv", mime="text/csv")
 
 
 def alerts_page(uid: str, role: str, sector_id: str | None) -> None:
@@ -357,6 +399,8 @@ def activity_page(role: str, sector_id: str | None) -> None:
     init_firebase()
 
     command_rows: list[dict[str, Any]] = []
+    profiles = db.reference("profiles").get() or {}
+    name_map = {pid: (pdata or {}).get("displayName") or pid for pid, pdata in profiles.items()}
     command_tree = db.reference("adminCommands").get() or {}
     for cmd_sector, lockers in command_tree.items():
         if role == "admin" and sector_id and cmd_sector != sector_id:
@@ -369,7 +413,7 @@ def activity_page(role: str, sector_id: str | None) -> None:
                         "sector": cmd_sector,
                         "locker": locker_id,
                         "cmd": safe.get("cmd"),
-                        "actor": safe.get("actorUid"),
+                        "actor": name_map.get(safe.get("actorUid"), safe.get("actorUid")),
                         "ts": safe.get("ts"),
                         "id": cmd_id,
                     }
@@ -401,7 +445,13 @@ def dashboard() -> None:
     sectors = load_all_sectors()
     sector_id = _selected_sector(profile, sectors)
 
-    st.sidebar.write(f"UID: {uid}")
+    theme_dark = st.sidebar.toggle("🌗 Dark mode", value=st.session_state.theme == "dark")
+    selected_theme = "dark" if theme_dark else "light"
+    if selected_theme != st.session_state.theme:
+        st.session_state.theme = selected_theme
+        st.rerun()
+
+    st.sidebar.write(f"Admin: {profile.get('displayName') or uid}")
     st.sidebar.write(f"Role: {role}")
     st.sidebar.write(f"Assigned Sector: {profile.get('sectorId')}")
     if st.sidebar.button("Logout"):
@@ -422,7 +472,7 @@ def dashboard() -> None:
     elif page == "Sector Config":
         sectors_page(uid, role, sectors, sector_id)
     elif page == "Operations":
-        operations_page(uid, role, sector_id, locker_views)
+        operations_page(uid, role, sectors, sector_id, locker_views)
     elif page == "Alerts Center":
         alerts_page(uid, role, sector_id)
     elif page == "Admin Management":
@@ -434,8 +484,8 @@ def dashboard() -> None:
 
 
 def main() -> None:
-    inject_global_styles()
     ensure_session()
+    inject_global_styles(st.session_state.theme)
     if not st.session_state.idToken:
         login_view()
     else:

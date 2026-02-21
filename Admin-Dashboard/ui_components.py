@@ -8,35 +8,41 @@ import streamlit as st
 from metrics import LockerView
 
 STATE_COLORS = {
-    "AVAILABLE": "🟢 AVAILABLE",
-    "OCCUPIED": "🔵 OCCUPIED",
-    "RESERVED": "🟠 RESERVED",
-    "MAINTENANCE": "🔴 MAINTENANCE",
+    "AVAILABLE": "🟢 healthy · AVAILABLE",
+    "OCCUPIED": "🟠 warning · OCCUPIED",
+    "RESERVED": "🟠 warning · RESERVED",
+    "MAINTENANCE": "🛠️ maintenance · MAINTENANCE",
 }
 
 
-def inject_global_styles() -> None:
+def inject_global_styles(theme: str = "dark") -> None:
+    panel_bg = "rgba(250, 250, 250, 0.03)" if theme == "dark" else "rgba(255, 255, 255, 0.95)"
+    panel_border = "rgba(120, 120, 120, 0.25)" if theme == "dark" else "rgba(60, 60, 60, 0.2)"
+    app_bg = "#0e1117" if theme == "dark" else "#f5f7fb"
+    text_color = "#fafafa" if theme == "dark" else "#101418"
+
     st.markdown(
-        """
+        f"""
         <style>
-            .block-container {padding-top: 1.2rem;}
-            .droplock-hero {
+            .stApp {{background: {app_bg}; color: {text_color};}}
+            .block-container {{padding-top: 1.2rem;}}
+            .droplock-hero {{
                 border-radius: 14px;
                 padding: 1.2rem 1.4rem;
                 margin-bottom: 0.8rem;
                 background: linear-gradient(120deg, #1d3557, #457b9d 60%, #a8dadc);
                 color: white;
                 box-shadow: 0 6px 20px rgba(0, 0, 0, 0.15);
-            }
-            .droplock-hero h2 {margin: 0;}
-            .droplock-hero p {margin: .35rem 0 0 0; opacity: .95;}
-            .droplock-panel {
-                border: 1px solid rgba(120, 120, 120, 0.25);
+            }}
+            .droplock-hero h2 {{margin: 0;}}
+            .droplock-hero p {{margin: .35rem 0 0 0; opacity: .95;}}
+            .droplock-panel {{
+                border: 1px solid {panel_border};
                 border-radius: 12px;
                 padding: 0.8rem;
                 margin-bottom: 0.65rem;
-                background-color: rgba(250, 250, 250, 0.03);
-            }
+                background-color: {panel_bg};
+            }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -66,7 +72,7 @@ def render_metrics(metrics: dict[str, int]) -> None:
 
 def format_state(locker: LockerView) -> str:
     if locker.is_offline:
-        return "⚫ OFFLINE"
+        return "🔴 critical · OFFLINE"
     return STATE_COLORS.get(locker.state, locker.state)
 
 
@@ -77,4 +83,4 @@ def format_ts(ts_ms: int | None) -> str:
 
 
 def tamper_badge(locker: LockerView) -> str:
-    return "⚠️ Tamper" if locker.tamper_flag else "—"
+    return "🚨 incident · Tamper" if locker.tamper_flag else "🟢 healthy"

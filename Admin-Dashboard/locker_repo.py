@@ -88,3 +88,23 @@ def append_locker_event(
 def update_sector_config(sector_id: str, config: dict[str, Any]) -> None:
     init_firebase()
     db.reference(f"sectors/{sector_id}/config").update(config)
+
+
+def create_sector(sector_id: str, timezone: str = "UTC", heartbeat_timeout_sec: int = 120, open_pulse_ms: int = 500) -> None:
+    init_firebase()
+    ref = db.reference(f"sectors/{sector_id}")
+    if ref.get() is not None:
+        raise ValueError(f"Sector already exists: {sector_id}")
+
+    ref.set(
+        {
+            "config": {
+                "timezone": timezone,
+                "heartbeatTimeoutSec": int(heartbeat_timeout_sec),
+                "openPulseMs": int(open_pulse_ms),
+            },
+            "adminUids": {},
+            "deviceUids": {},
+            "createdAt": now_ms(),
+        }
+    )

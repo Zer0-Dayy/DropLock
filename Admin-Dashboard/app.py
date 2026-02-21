@@ -16,7 +16,7 @@ from firebase_admin import db
 from admin_init import init_firebase, verify_id_token
 from admin_ops import assert_super_admin, get_profile
 from alert_service import AlertService
-from authentication import sign_in
+from authentication import change_password, sign_in
 from locker_actions import admin_request_open, admin_set_state, super_create_locker, super_delete_locker
 from locker_repo import create_sector, load_all_sectors, load_lockers, update_sector_config
 from metrics import LOCKER_STATES, DEFAULT_HEARTBEAT_TIMEOUT_SEC, LockerView, build_locker_view, compute_sector_metrics
@@ -427,6 +427,76 @@ def activity_page(role: str, sector_id: str | None) -> None:
         st.info("No command history found")
 
 
+
+def account_page(profile: dict[str, Any]) -> None:
+    hero("🔑 Account Settings", "Change your account password.")
+
+    with st.form("change_password"):
+        current_password = st.text_input("Current Password", type="password")
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+        submit = st.form_submit_button("Update Password")
+
+    if not submit:
+        return
+
+    email = profile.get("email")
+    if not email:
+        st.error("Your profile is missing an email address.")
+        return
+
+    if new_password != confirm_password:
+        st.error("New password and confirmation must match.")
+        return
+
+    if len(new_password) < 8:
+        st.error("New password must be at least 8 characters.")
+        return
+
+    try:
+        sign_in(email, current_password)
+        result = change_password(st.session_state.idToken, new_password)
+        st.session_state.idToken = result.get("idToken", st.session_state.idToken)
+        st.success("Password updated successfully.")
+    except Exception as exc:
+        st.error(str(exc))
+
+
+def _suggestions_file_path() -> Path:
+    return Path(__file__).resolve().parent / "IMPROVEMENT_IDEAS.txt"
+
+
+def improvement_ideas_page(profile: dict[str, Any]) -> None:
+    role = profile.get("role")
+    display_name = profile.get("displayName") or profile.get("email") or "Unknown User"
+    ideas_file = _suggestions_file_path()
+
+    hero("🧠 Improvement Ideas", "Capture improvement suggestions from admins.")
+
+    with st.form("submit_idea"):
+        suggestion = st.text_area("Share an improvement idea", height=180, placeholder="Describe your idea...")
+        submit = st.form_submit_button("Submit Idea")
+
+    if submit:
+        cleaned = suggestion.strip()
+        if not cleaned:
+            st.error("Suggestion cannot be empty.")
+        else:
+            timestamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+            entry = f"[{timestamp}] {display_name}:\n{cleaned}\n\n"
+            ideas_file.parent.mkdir(parents=True, exist_ok=True)
+            with ideas_file.open("a", encoding="utf-8") as handle:
+                handle.write(entry)
+            st.success("Suggestion saved.")
+
+    if role == "superAdmin":
+        if ideas_file.exists():
+            st.text_area("All submitted ideas", ideas_file.read_text(encoding="utf-8"), height=400)
+        else:
+            st.info("No ideas submitted yet.")
+    else:
+        st.caption("Suggestions are appended to a shared file. Only super admins can view all submissions.")
+
 def help_page() -> None:
     hero("🧠 Modules & Improvement Ideas", "Project structure notes plus practical next steps for UX and reliability.")
     notes_file = Path(__file__).resolve().parent / "MODULE_GUIDE.txt"
@@ -459,7 +529,7 @@ def dashboard() -> None:
             st.session_state[key] = None
         st.rerun()
 
-    pages = ["Overview", "Sector Config", "Operations", "Alerts Center", "Activity Feed", "Modules & Ideas"]
+    pages = ["Overview", "Sector Config", "Operations", "Alerts Center", "Activity Feed", "Account Settings", "Improvement Ideas"]
     if role == "superAdmin":
         pages.insert(4, "Admin Management")
     page = st.sidebar.radio("Navigation", pages)
@@ -479,8 +549,10 @@ def dashboard() -> None:
         admin_mgmt_page(uid, role, sectors)
     elif page == "Activity Feed":
         activity_page(role, sector_id)
-    elif page == "Modules & Ideas":
-        help_page()
+    elif page == "Account Settings":
+        account_page(profile)
+    elif page == "Improvement Ideas":
+        improvement_ideas_page(profile)
 
 
 def main() -> None:

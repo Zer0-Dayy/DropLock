@@ -51,8 +51,8 @@ def login_view() -> None:
         st.markdown("### Welcome back")
         st.write("Sign in to manage lockers, respond to incidents, and keep sectors healthy.")
         st.image(
-            "https://images.unsplash.com/photo-1556157382-97eda2d62296?auto=format&fit=crop&w=1200&q=80",
-            caption="Control room vibe (stock image, replace as needed)",
+            "logo.jpg",
+            caption="",
             width="stretch",
         )
 

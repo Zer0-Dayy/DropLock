@@ -53,6 +53,7 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
             locker_id="Locker 1",
             sector_id="S1",
             device_uid="dev-1",
+            phase=SessionPhase.WAITING_FOR_OTHER_GATES,
             weight_expected_grams=1500,
         )
 
@@ -72,6 +73,144 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertTrue(orchestrator._active_session.weight_accepted)
         self.assertEqual(orchestrator._firebase_repo.updated_weight, ("book-1", 1500))
         self.assertTrue(called["capture"])
+
+
+
+    def test_scan_processed_while_idle_ui_visible(self):
+        class FakeScanner:
+            def __init__(self):
+                self.started = False
+                self._returned = False
+
+            def start(self):
+                self.started = True
+
+            def get_scan_nowait(self):
+                if self._returned:
+                    return None
+                self._returned = True
+                return SimpleNamespace(normalized_text="tok-idle")
+
+        class FakeValidator:
+            def validate(self, token_id):
+                return ValidationResult(
+                    allowed=False,
+                    reason="DENIED_FOR_TEST",
+                    token_data={"purpose": "USER_PICKUP"},
+                )
+
+        scanner = FakeScanner()
+        ui_calls = []
+
+        class FakeUI:
+            def show_idle(self):
+                ui_calls.append("idle")
+
+            def show_processing_request(self, token_id):
+                ui_calls.append(f"processing:{token_id}")
+
+            def show_denied(self, token_id, reason):
+                ui_calls.append(f"denied:{token_id}:{reason}")
+
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=scanner,
+            access_validator=FakeValidator(),
+            mqtt_client=SimpleNamespace(start=lambda: None),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=FakeFirebaseRepo(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=FakeUI(),
+        )
+
+        orchestrator.start()
+        processed = orchestrator._process_next_scan()
+
+        self.assertTrue(scanner.started)
+        self.assertTrue(processed)
+        self.assertEqual(ui_calls[0], "idle")
+        self.assertIn("processing:tok-idle", ui_calls)
+        self.assertIn("denied:tok-idle:DENIED_FOR_TEST", ui_calls)
+
+    def test_scan_can_come_from_ui_queue_when_stdin_has_none(self):
+        class EmptyScanner:
+            def start(self):
+                return None
+
+            def get_scan_nowait(self):
+                return None
+
+        class FakeValidator:
+            def validate(self, token_id):
+                return ValidationResult(allowed=False, reason="DENIED_UI", token_data={"purpose": "USER_PICKUP"})
+
+        class FakeUI:
+            def __init__(self):
+                self.scans = ["TOK-FROM-UI"]
+                self.calls = []
+
+            def show_idle(self):
+                self.calls.append("idle")
+
+            def show_processing_request(self, token_id):
+                self.calls.append(f"processing:{token_id}")
+
+            def show_denied(self, token_id, reason):
+                self.calls.append(f"denied:{token_id}:{reason}")
+
+            def get_scan_nowait(self):
+                if not self.scans:
+                    return None
+                return self.scans.pop(0)
+
+        ui = FakeUI()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=EmptyScanner(),
+            access_validator=FakeValidator(),
+            mqtt_client=SimpleNamespace(start=lambda: None),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=FakeFirebaseRepo(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=ui,
+        )
+        orchestrator.start()
+        processed = orchestrator._process_next_scan()
+
+        self.assertTrue(processed)
+        self.assertIn("processing:TOK-FROM-UI", ui.calls)
+        self.assertIn("denied:TOK-FROM-UI:DENIED_UI", ui.calls)
+
+    def test_ignores_late_weight_events_after_closing_started(self):
+        orchestrator = self._build_orchestrator()
+        orchestrator._active_validation = ValidationResult(
+            allowed=True,
+            token_data={"purpose": "COURIER_DROP"},
+        )
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.CLOSING,
+            weight_expected_grams=1500,
+        )
+        orchestrator._capture_signature_and_close_if_ready = lambda: self.fail("signature should not be recaptured")
+
+        orchestrator._on_weight_measured(
+            ControllerEvent(
+                event_type=ControllerEventType.WEIGHT_MEASURED,
+                locker_id="Locker 1",
+                request_id="req-1",
+                payload={"measuredWeightGrams": "1500"},
+            )
+        )
+
+        self.assertEqual(orchestrator._active_session.phase, SessionPhase.CLOSING)
 
     def test_courier_drop_close_ack_issues_pickup_token_and_email(self):
         repo = FakeFirebaseRepo()

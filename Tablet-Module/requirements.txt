@@ -1,0 +1,3 @@
+# Tablet-Module runtime dependencies
+# Install with: pip install -r requirements.txt
+qrcode[pil]>=7.4.2

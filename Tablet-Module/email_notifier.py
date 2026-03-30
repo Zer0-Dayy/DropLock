@@ -78,7 +78,7 @@ class EmailNotifier:
             png_data = self._build_qr_png(token_id)
         except Exception:
             logger.warning(
-                "QR image generation unavailable; sending token email without PNG attachment token_id=%s",
+                "QR image generation unavailable (install qrcode[pil]); sending token email without PNG attachment token_id=%s",
                 token_id,
             )
 

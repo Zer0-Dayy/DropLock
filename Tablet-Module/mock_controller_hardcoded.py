@@ -117,6 +117,22 @@ def handle_open(client: mqtt.Client, cmd: dict) -> None:
         },
     )
 
+    # Re-emit once in case tablet reconnects during the first publish.
+    time.sleep(1)
+    publish_event(
+        client,
+        {
+            "schemaVersion": 1,
+            "type": "WEIGHT_MEASURED",
+            "requestId": request_id,
+            "ts": now_ms(),
+            "sectorId": SECTOR_ID,
+            "lockerId": LOCKER_ID,
+            "weightGrams": HARDCODED_MEASURED_WEIGHT_GRAMS,
+            "measuredWeightGrams": HARDCODED_MEASURED_WEIGHT_GRAMS,
+        },
+    )
+
 
 def handle_close(client: mqtt.Client, cmd: dict) -> None:
     request_id = cmd.get("requestId", "")

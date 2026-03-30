@@ -10,12 +10,20 @@ class FakeFirebaseRepo:
     def __init__(self):
         self.updated_weight = None
         self.appended_events = []
+        self.booking = {"userId": "user-1"}
+        self.profile = {"email": "user@example.com", "displayName": "User One"}
 
     def update_booking_measured_weight(self, booking_id, measured_weight_grams):
         self.updated_weight = (booking_id, measured_weight_grams)
 
     def append_booking_event(self, booking_id, event_type, actor_uid, data):
         self.appended_events.append((booking_id, event_type, actor_uid, data))
+
+    def get_booking(self, booking_id):
+        return self.booking
+
+    def get_profile(self, uid):
+        return self.profile
 
 
 class SessionOrchestratorWeightParseTests(unittest.TestCase):
@@ -63,6 +71,36 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertTrue(orchestrator._active_session.weight_accepted)
         self.assertEqual(orchestrator._firebase_repo.updated_weight, ("book-1", 1500))
         self.assertTrue(called["capture"])
+
+    def test_courier_drop_close_ack_issues_pickup_token_and_email(self):
+        repo = FakeFirebaseRepo()
+        sent_email = {"called": False, "to": None}
+
+        class FakeTokenService:
+            def issue_user_pickup_token(self, booking_id):
+                return SimpleNamespace(token_id="upk_123", purpose="USER_PICKUP")
+
+        class FakeEmailNotifier:
+            def send_token_email_async(self, **kwargs):
+                sent_email["called"] = True
+                sent_email["to"] = kwargs.get("to_email")
+
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            token_service=FakeTokenService(),
+            email_notifier=FakeEmailNotifier(),
+        )
+
+        orchestrator._issue_pickup_token_and_notify("book-1")
+        self.assertTrue(sent_email["called"])
+        self.assertEqual(sent_email["to"], "user@example.com")
 
 
 if __name__ == "__main__":

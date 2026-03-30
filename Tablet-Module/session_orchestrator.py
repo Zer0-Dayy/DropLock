@@ -302,13 +302,14 @@ class SessionOrchestrator:
             logger.warning("Token service missing; cannot issue USER_PICKUP token")
             return
 
+        booking = self._firebase_repo.get_booking(booking_id) or {}
+        user_id = booking.get("userId")
+        profile = self._firebase_repo.get_profile(user_id) if user_id else None
+        email = (profile or {}).get("email") or booking.get("userEmail")
+        display_name = (profile or {}).get("displayName") or booking.get("userName") or "customer"
+
         try:
             issued = self._token_service.issue_user_pickup_token(booking_id)
-            booking = self._firebase_repo.get_booking(booking_id) or {}
-            user_id = booking.get("userId")
-            profile = self._firebase_repo.get_profile(user_id) if user_id else None
-            email = (profile or {}).get("email")
-            display_name = (profile or {}).get("displayName") or "customer"
             if email and self._email_notifier is not None:
                 self._email_notifier.send_token_email_async(
                     to_email=email,
@@ -316,6 +317,14 @@ class SessionOrchestrator:
                     booking_id=booking_id,
                     token_id=issued.token_id,
                     purpose=issued.purpose,
+                )
+            else:
+                logger.warning(
+                    "Cannot send pickup token email booking_id=%s user_id=%s email_present=%s notifier_present=%s",
+                    booking_id,
+                    user_id,
+                    bool(email),
+                    self._email_notifier is not None,
                 )
         except Exception:
             logger.exception("Failed to issue pickup token / send notification booking_id=%s", booking_id)

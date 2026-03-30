@@ -1,0 +1,22 @@
+# Virtual environment
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Secrets / keys
+Keys/
+*.pem
+*.key
+*.env
+env.sh
+
+# Local configs
+config.py.save
+
+# Tests (optional)
+.Tests/
+
+# OS junk
+.DS_Store

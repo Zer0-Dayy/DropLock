@@ -1,0 +1,16 @@
+export FIREBASE_DB_URL="XXXXX"
+export FIREBASE_API_KEY="XXXXX"
+
+export DEVICE_UID="tablet-sectorX"
+export DEVICE_EMAIL="tabletsX@gmail.com"
+export DEVICE_PASSWORD="XXXXX"
+
+export MQTT_HOST="XXXXX"
+export MQTT_PORT="8883"
+
+export MQTT_TLS_ENABLED="TRUE"
+export MQTT_TLS_CA_CERT_PATH="XXXXX"
+export MQTT_TLS_CLIENT_CERT_PATH="XXXXX"
+export MQTT_TLS_CLIENT_KEY_PATH="XXXXX"
+
+export SIGNATURE_BASE_PATH="/home/Signatures"

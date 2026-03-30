@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from dataclasses import replace
@@ -17,6 +18,7 @@ from session_models import (
     SignatureResult,
     ValidationResult,
 )
+from close_gates import CloseGates
 
 
 logger = logging.getLogger(__name__)
@@ -219,13 +221,11 @@ class SessionOrchestrator:
         accepted, reason = self._close_gates.evaluate_weight_only(self._active_session)
         self._active_session = replace(self._active_session, weight_accepted=accepted)
 
-        self._firebase_repo.update_booking_measured_weight(
+        self._persist_weight_update_async(
             booking_id=self._active_session.booking_id,
-            measured_weight_grams=measured,
-        )
-        self._append_booking_event(
-            "WEIGHT_MEASURED",
-            {"measuredWeightGrams": measured, "accepted": accepted, "reason": reason},
+            measured=measured,
+            accepted=accepted,
+            reason=reason,
         )
 
         if not accepted:
@@ -261,9 +261,14 @@ class SessionOrchestrator:
 
     def _attempt_close_if_ready(self) -> None:
         assert self._active_session is not None
-        self._close_gates._config.require_weight = self._purpose() == self.PURPOSE_COURIER_DROP
+        require_weight = self._purpose() == self.PURPOSE_COURIER_DROP
+        close_gates = self._close_gates
 
-        result: CloseGateResult = self._close_gates.evaluate(
+        config = getattr(close_gates, "_config", None)
+        if config is not None and getattr(config, "require_weight", None) != require_weight:
+            close_gates = CloseGates(config=replace(config, require_weight=require_weight))
+
+        result: CloseGateResult = close_gates.evaluate(
             self._active_session,
             door_closed=self._locker_door_closed.get(self._active_session.locker_id),
         )
@@ -275,6 +280,29 @@ class SessionOrchestrator:
         self._show_closing_ui(self._active_session)
         self._publish_close(self._active_session)
         self._active_close_sent_mono = time.monotonic()
+
+    def _persist_weight_update_async(
+        self,
+        *,
+        booking_id: str,
+        measured: int,
+        accepted: bool,
+        reason: str,
+    ) -> None:
+        def _write() -> None:
+            try:
+                self._firebase_repo.update_booking_measured_weight(
+                    booking_id=booking_id,
+                    measured_weight_grams=measured,
+                )
+                self._append_booking_event(
+                    "WEIGHT_MEASURED",
+                    {"measuredWeightGrams": measured, "accepted": accepted, "reason": reason},
+                )
+            except Exception:
+                logger.exception("Failed to persist measured weight booking_id=%s", booking_id)
+
+        threading.Thread(target=_write, daemon=True, name="persist-weight").start()
 
     def _on_close_ack(self, event: ControllerEvent) -> None:
         assert self._active_session is not None

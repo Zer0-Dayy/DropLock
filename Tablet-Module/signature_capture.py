@@ -145,8 +145,18 @@ class SignatureCapture:
         )
         header.grid(row=0, column=0, sticky="ew")
 
+        helper = tk.Label(
+            self._root,
+            text="Use a finger or stylus. Tap Confirm when finished.",
+            font=("Arial", 12),
+            bg="#f3f4f6",
+            fg="#4b5563",
+            pady=0,
+        )
+        helper.grid(row=1, column=0, sticky="ew")
+
         center_frame = tk.Frame(self._root, bg="#f3f4f6", padx=20, pady=10)
-        center_frame.grid(row=1, column=0, sticky="nsew")
+        center_frame.grid(row=2, column=0, sticky="nsew")
         center_frame.rowconfigure(0, weight=1)
         center_frame.columnconfigure(0, weight=1)
 
@@ -166,7 +176,7 @@ class SignatureCapture:
         self._canvas.bind("<ButtonRelease-1>", self._on_pen_up)
 
         footer = tk.Frame(self._root, bg="#f3f4f6", padx=20, pady=16)
-        footer.grid(row=2, column=0, sticky="ew")
+        footer.grid(row=3, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
 
         self._status_var = tk.StringVar(value="Sign using your finger or stylus.")
@@ -185,6 +195,8 @@ class SignatureCapture:
             text="Clear",
             width=12,
             height=2,
+            bg="#e5e7eb",
+            activebackground="#d1d5db",
             command=self._clear_signature,
         )
         clear_btn.grid(row=1, column=0, padx=8)
@@ -194,15 +206,19 @@ class SignatureCapture:
             text="Cancel",
             width=12,
             height=2,
+            bg="#fee2e2",
+            activebackground="#fecaca",
             command=self._cancel_capture,
         )
         cancel_btn.grid(row=1, column=1, padx=8)
 
         confirm_btn = tk.Button(
             footer,
-            text="Confirm",
+            text="Confirm & Close",
             width=12,
             height=2,
+            bg="#dcfce7",
+            activebackground="#bbf7d0",
             command=self._confirm_signature,
         )
         confirm_btn.grid(row=1, column=2, padx=8)

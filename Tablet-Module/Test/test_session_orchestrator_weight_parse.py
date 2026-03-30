@@ -1,8 +1,9 @@
 import unittest
+from datetime import datetime
 from types import SimpleNamespace
 
 from close_gates import CloseGates
-from session_models import ControllerEvent, ControllerEventType, LockerSession, ValidationResult
+from session_models import ControllerEvent, ControllerEventType, LockerSession, SessionPhase, ValidationResult
 from session_orchestrator import SessionOrchestrator
 
 
@@ -101,6 +102,42 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         orchestrator._issue_pickup_token_and_notify("book-1")
         self.assertTrue(sent_email["called"])
         self.assertEqual(sent_email["to"], "user@example.com")
+
+    def test_user_pickup_close_path_does_not_mutate_frozen_gate_config(self):
+        published = {"close": False}
+
+        class FakeMQTT:
+            def publish_close(self, **kwargs):
+                published["close"] = True
+
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=FakeMQTT(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=FakeFirebaseRepo(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),  # require_weight defaults to True
+        )
+        orchestrator._active_validation = ValidationResult(
+            allowed=True,
+            token_data={"purpose": "USER_PICKUP"},
+        )
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.READY_TO_CLOSE,
+            signature_captured_at=datetime.utcnow(),
+            signature_path="/tmp/sign.png",
+        )
+
+        orchestrator._attempt_close_if_ready()
+        self.assertTrue(published["close"])
 
 
 if __name__ == "__main__":

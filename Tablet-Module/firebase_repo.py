@@ -326,10 +326,11 @@ class FirebaseRepo:
         )
 
         # Keep the activeBookingByLocker index aligned if present
-        self.put_json(
-            f"indexes/activeBookingByLocker/{sector_id}/{locker_id}",
-            active_booking_id,
-        )
+        index_path = f"indexes/activeBookingByLocker/{sector_id}/{locker_id}"
+        if active_booking_id is None:
+            self.delete_json(index_path)
+        else:
+            self.put_json(index_path, active_booking_id)
 
     # ------------------------------------------------------------------
     # Unlock request / grant helpers

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 import uuid
 from dataclasses import replace
@@ -17,6 +18,7 @@ from session_models import (
     SignatureResult,
     ValidationResult,
 )
+from close_gates import CloseGates
 
 
 logger = logging.getLogger(__name__)
@@ -122,9 +124,16 @@ class SessionOrchestrator:
         self._active_session = session
         self._active_validation = validation
 
-        self._create_unlock_records(granted=True, reason="OK", session=session)
         self._show_unlocking_ui(session)
-        self._publish_open(session)
+        try:
+            self._publish_open(session)
+        except Exception as exc:
+            logger.warning("Failed to publish OPEN request_id=%s locker_id=%s: %s", session.request_id, session.locker_id, exc)
+            self._show_error_ui("Controller offline. Please scan again.")
+            self._clear_active_session()
+            return True
+
+        self._create_unlock_records(granted=True, reason="OK", session=session)
         self._active_open_sent_mono = time.monotonic()
         return True
 
@@ -205,23 +214,25 @@ class SessionOrchestrator:
         if self._purpose() != self.PURPOSE_COURIER_DROP:
             return
 
-        weight = event.payload.get("weightGrams")
+        payload = event.payload or {}
+        weight = payload.get("weightGrams")
+        if weight is None:
+            weight = payload.get("measuredWeightGrams")
         try:
             measured = int(weight)
         except Exception:
+            self._log_event("WEIGHT_PARSE_FAILED", raw_weight=weight, payload=payload)
             return
 
         self._active_session = replace(self._active_session, weight_measured_grams=measured)
         accepted, reason = self._close_gates.evaluate_weight_only(self._active_session)
         self._active_session = replace(self._active_session, weight_accepted=accepted)
 
-        self._firebase_repo.update_booking_measured_weight(
+        self._persist_weight_update_async(
             booking_id=self._active_session.booking_id,
-            measured_weight_grams=measured,
-        )
-        self._append_booking_event(
-            "WEIGHT_MEASURED",
-            {"measuredWeightGrams": measured, "accepted": accepted, "reason": reason},
+            measured=measured,
+            accepted=accepted,
+            reason=reason,
         )
 
         if not accepted:
@@ -257,9 +268,14 @@ class SessionOrchestrator:
 
     def _attempt_close_if_ready(self) -> None:
         assert self._active_session is not None
-        self._close_gates._config.require_weight = self._purpose() == self.PURPOSE_COURIER_DROP
+        require_weight = self._purpose() == self.PURPOSE_COURIER_DROP
+        close_gates = self._close_gates
 
-        result: CloseGateResult = self._close_gates.evaluate(
+        config = getattr(close_gates, "_config", None)
+        if config is not None and getattr(config, "require_weight", None) != require_weight:
+            close_gates = CloseGates(config=replace(config, require_weight=require_weight))
+
+        result: CloseGateResult = close_gates.evaluate(
             self._active_session,
             door_closed=self._locker_door_closed.get(self._active_session.locker_id),
         )
@@ -271,6 +287,29 @@ class SessionOrchestrator:
         self._show_closing_ui(self._active_session)
         self._publish_close(self._active_session)
         self._active_close_sent_mono = time.monotonic()
+
+    def _persist_weight_update_async(
+        self,
+        *,
+        booking_id: str,
+        measured: int,
+        accepted: bool,
+        reason: str,
+    ) -> None:
+        def _write() -> None:
+            try:
+                self._firebase_repo.update_booking_measured_weight(
+                    booking_id=booking_id,
+                    measured_weight_grams=measured,
+                )
+                self._append_booking_event(
+                    "WEIGHT_MEASURED",
+                    {"measuredWeightGrams": measured, "accepted": accepted, "reason": reason},
+                )
+            except Exception:
+                logger.exception("Failed to persist measured weight booking_id=%s", booking_id)
+
+        threading.Thread(target=_write, daemon=True, name="persist-weight").start()
 
     def _on_close_ack(self, event: ControllerEvent) -> None:
         assert self._active_session is not None
@@ -298,13 +337,14 @@ class SessionOrchestrator:
             logger.warning("Token service missing; cannot issue USER_PICKUP token")
             return
 
+        booking = self._firebase_repo.get_booking(booking_id) or {}
+        user_id = booking.get("userId")
+        profile = self._firebase_repo.get_profile(user_id) if user_id else None
+        email = (profile or {}).get("email") or booking.get("userEmail")
+        display_name = (profile or {}).get("displayName") or booking.get("userName") or "customer"
+
         try:
             issued = self._token_service.issue_user_pickup_token(booking_id)
-            booking = self._firebase_repo.get_booking(booking_id) or {}
-            user_id = booking.get("userId")
-            profile = self._firebase_repo.get_profile(user_id) if user_id else None
-            email = (profile or {}).get("email")
-            display_name = (profile or {}).get("displayName") or "customer"
             if email and self._email_notifier is not None:
                 self._email_notifier.send_token_email_async(
                     to_email=email,
@@ -312,6 +352,14 @@ class SessionOrchestrator:
                     booking_id=booking_id,
                     token_id=issued.token_id,
                     purpose=issued.purpose,
+                )
+            else:
+                logger.warning(
+                    "Cannot send pickup token email booking_id=%s user_id=%s email_present=%s notifier_present=%s",
+                    booking_id,
+                    user_id,
+                    bool(email),
+                    self._email_notifier is not None,
                 )
         except Exception:
             logger.exception("Failed to issue pickup token / send notification booking_id=%s", booking_id)

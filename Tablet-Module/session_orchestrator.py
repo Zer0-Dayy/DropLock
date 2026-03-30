@@ -5,7 +5,7 @@ import time
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from session_models import (
     CloseGateResult,
@@ -20,6 +20,7 @@ from session_models import (
 
 
 logger = logging.getLogger(__name__)
+
 
 class SessionOrchestrator:
     PURPOSE_COURIER_DROP = "COURIER_DROP"
@@ -36,6 +37,7 @@ class SessionOrchestrator:
         firebase_repo: Any,
         signature_capture: Any,
         close_gates: Any,
+        token_service: Any | None = None,
         ui_controller: Any | None = None,
         event_logger: Any | None = None,
         email_notifier: Any | None = None,
@@ -52,6 +54,7 @@ class SessionOrchestrator:
         self._firebase_repo = firebase_repo
         self._signature_capture = signature_capture
         self._close_gates = close_gates
+        self._token_service = token_service
         self._ui_controller = ui_controller
         self._event_logger = event_logger
         self._email_notifier = email_notifier
@@ -64,601 +67,309 @@ class SessionOrchestrator:
         self._running = False
         self._active_session: LockerSession | None = None
         self._active_validation: ValidationResult | None = None
+        self._active_open_sent_mono: float | None = None
+        self._active_close_sent_mono: float | None = None
 
-        # Latest known physical/controller state per locker
-        self._locker_door_closed: dict[str, Optional[bool]] = {}
-        self._locker_last_heartbeat_ms: dict[str, int] = {}
-        self._locker_last_tamper_ms: dict[str, int] = {}
+        self._locker_door_closed: dict[str, bool] = {}
 
-    # ------------------------------------------------------------------
-    # Public lifecycle
-    # ------------------------------------------------------------------
+    def run_forever(self) -> None:
+        self.start()
+        try:
+            while self._running:
+                did_work = False
+                did_work |= self._process_next_mqtt_message()
+                did_work |= self._process_next_scan()
+                did_work |= self._check_session_timeouts()
+                if not did_work:
+                    time.sleep(self._idle_sleep_s)
+        finally:
+            logger.info("Session orchestrator loop ended")
 
     def start(self) -> None:
-        """
-        Start scanner and MQTT client if not already started.
-        """
-        logger.info("Starting session orchestrator for sector=%s", self._device_context.sector_id)
-
         self._ensure_scanner_started()
         self._ensure_mqtt_started()
-
         self._running = True
         self._show_idle_ui()
 
     def stop(self) -> None:
         self._running = False
-        logger.info("Stopping session orchestrator")
-
-    def run_forever(self) -> None:
-        """
-        Main always-on loop.
-        """
-        self.start()
-
-        try:
-            while self._running:
-                did_work = False
-
-                did_work |= self._process_next_mqtt_message()
-                did_work |= self._process_next_scan()
-                did_work |= self._check_session_timeouts()
-
-                if not did_work:
-                    time.sleep(self._idle_sleep_s)
-        finally:
-            logger.info("Session orchestrator stopped")
-
-    def step_once(self) -> bool:
-        """
-        Single loop iteration for tests or integration harnesses.
-        """
-        did_work = False
-        did_work |= self._process_next_mqtt_message()
-        did_work |= self._process_next_scan()
-        did_work |= self._check_session_timeouts()
-        return did_work
-
-    # ------------------------------------------------------------------
-    # Main loop pieces
-    # ------------------------------------------------------------------
 
     def _process_next_scan(self) -> bool:
-        token_id = self._get_scan_nowait()
-        if not token_id:
+        scan = self._scanner_input.get_scan_nowait()
+        if scan is None:
             return False
 
-        logger.info("QR scanned token_id=%s", token_id)
+        token_id = getattr(scan, "normalized_text", None) or str(scan).strip()
+        if not token_id:
+            return True
+
         self._log_event("SCAN_RECEIVED", token_id=token_id)
 
         if self._active_session is not None:
-            logger.warning(
-                "Ignoring scan while session is active request_id=%s token_id=%s",
-                self._active_session.request_id,
-                token_id,
-            )
             self._show_busy_ui(token_id)
             return True
 
-        self._handle_scanned_token(token_id)
+        self._show_validating_ui(token_id)
+        validation = self._validate_token(token_id)
+
+        if not validation.allowed:
+            reason = validation.reason or "DENIED"
+            self._show_denied_ui(token_id, reason)
+            self._log_event("QR_DENIED", token_id=token_id, reason=reason)
+            return True
+
+        session = self._build_session(token_id, validation)
+        self._active_session = session
+        self._active_validation = validation
+
+        self._create_unlock_records(granted=True, reason="OK", session=session)
+        self._show_unlocking_ui(session)
+        self._publish_open(session)
+        self._active_open_sent_mono = time.monotonic()
         return True
+
     def _process_next_mqtt_message(self) -> bool:
-        raw_msg = self._get_mqtt_message(timeout=self._mqtt_poll_timeout_s)
+        raw_msg = self._mqtt_client.get_message(timeout=self._mqtt_poll_timeout_s)
         if raw_msg is None:
             return False
 
-        event = self._parse_controller_event(raw_msg)
+        event = self._controller_event_parser.parse(raw_msg)
         if event is None:
-            logger.warning("Ignoring unparsable controller message")
             return True
 
-        self._route_controller_event(event)
+        self._route_event(event)
         return True
 
-    def _check_session_timeouts(self) -> bool:
-        if self._active_session is None:
-            return False
-
-        now = time.monotonic()
-        did_work = False
-
-        if self._active_session.phase == SessionPhase.UNLOCKING:
-            if self._session_age_s(now) > self._open_ack_timeout_s:
-                logger.error(
-                    "OPEN_ACK timeout request_id=%s",
-                    self._active_session.request_id,
-                )
-                self._fail_active_session("OPEN_ACK_TIMEOUT")
-                did_work = True
-
-        elif self._active_session.phase == SessionPhase.CLOSING:
-            if self._session_age_s(now, use_close_requested=True) > self._close_ack_timeout_s:
-                logger.error(
-                    "CLOSE_ACK timeout request_id=%s",
-                    self._active_session.request_id,
-                )
-                self._fail_active_session("CLOSE_ACK_TIMEOUT")
-                did_work = True
-
-        return did_work
-
-    # ------------------------------------------------------------------
-    # Scan -> validation -> session creation
-    # ------------------------------------------------------------------
-
-    def _handle_scanned_token(self, token_id: str) -> None:
-        self._show_validating_ui(token_id)
-
-        try:
-            validation = self._validate_token(token_id)
-        except Exception:
-            logger.exception("QR validation crashed token_id=%s", token_id)
-            self._show_denied_ui(token_id, "VALIDATION_ERROR")
-            self._log_event("VALIDATION_ERROR", token_id=token_id)
-            return
-
-        if not validation.allowed:
-            logger.info(
-                "QR denied token_id=%s reason=%s",
-                token_id,
-                validation.reason,
-            )
-            self._show_denied_ui(token_id, validation.reason)
-            self._log_event(
-                "QR_DENIED",
-                token_id=token_id,
-                reason=validation.reason,
-            )
-            return
-
-        self._active_validation = validation
-        session = self._build_session_from_validation(token_id, validation)
-        self._active_session = session
-
-        logger.info(
-            "Session created request_id=%s purpose=%s locker_id=%s booking_id=%s",
-            session.request_id,
-            self._purpose(),
-            session.locker_id,
-            session.booking_id,
-        )
-        self._log_event(
-            "SESSION_CREATED",
-            request_id=session.request_id,
-            token_id=session.token_id,
-            booking_id=session.booking_id,
-            locker_id=session.locker_id,
-            purpose=self._purpose(),
-        )
-
-        self._show_unlocking_ui(session)
-        self._publish_open(session)
-
-    def _build_session_from_validation(
-        self,
-        token_id: str,
-        validation: ValidationResult,
-    ) -> LockerSession:
-        booking_data = validation.booking_data or {}
-        token_data = validation.token_data or {}
-        now = self._now_dt()
-
-        return LockerSession(
-            request_id=self._make_request_id(),
-            token_id=token_id,
-            booking_id=str(token_data.get("bookingId") or booking_data.get("bookingId") or ""),
-            locker_id=str(token_data.get("lockerId") or booking_data.get("lockerId") or ""),
-            sector_id=str(token_data.get("sectorId") or booking_data.get("sectorId") or self._device_context.sector_id),
-            device_uid=self._device_context.device_uid,
-            phase=SessionPhase.UNLOCKING,
-            created_at=now,
-            opened_at=None,
-            signature_captured_at=None,
-            close_requested_at=None,
-            completed_at=None,
-            signature_path=None,
-            weight_expected_grams=booking_data.get("expectedWeightGrams"),
-            weight_measured_grams=None,
-            weight_accepted=None,
-        )
-    # ------------------------------------------------------------------
-    # Event routing
-    # ------------------------------------------------------------------
-
-    def _route_controller_event(self, event: ControllerEvent) -> None:
-        logger.info(
-            "Routing controller event type=%s locker_id=%s request_id=%s",
-            event.event_type,
-            event.locker_id,
-            event.request_id,
-        )
-        self._log_event(
-            "CONTROLLER_EVENT",
-            event_type=event.event_type.value,
-            locker_id=event.locker_id,
-            request_id=event.request_id,
-            payload=event.payload,
-        )
-
-        if event.event_type in {ControllerEventType.HEARTBEAT, ControllerEventType.TAMPER}:
-            self._handle_background_event(event)
+    def _route_event(self, event: ControllerEvent) -> None:
+        if event.event_type in (ControllerEventType.HEARTBEAT, ControllerEventType.TAMPER):
+            self._handle_background(event)
             return
 
         if self._active_session is None:
-            # Sessionless door open/close etc. are treated as background telemetry.
-            self._handle_background_event(event)
+            if event.event_type in (ControllerEventType.DOOR_OPEN, ControllerEventType.DOOR_CLOSED):
+                self._locker_door_closed[event.locker_id] = event.event_type == ControllerEventType.DOOR_CLOSED
             return
 
         if event.locker_id != self._active_session.locker_id:
-            logger.info(
-                "Ignoring event for different locker active=%s incoming=%s",
-                self._active_session.locker_id,
-                event.locker_id,
-            )
             return
-
         if event.request_id and event.request_id != self._active_session.request_id:
-            logger.info(
-                "Ignoring event for different request_id active=%s incoming=%s",
-                self._active_session.request_id,
-                event.request_id,
-            )
             return
-
-        self._handle_session_event(event)
-
-    # ------------------------------------------------------------------
-    # Background events
-    # ------------------------------------------------------------------
-
-    def _handle_background_event(self, event: ControllerEvent) -> None:
-        if event.event_type == ControllerEventType.HEARTBEAT:
-            self._handle_heartbeat(event)
-            return
-
-        if event.event_type == ControllerEventType.TAMPER:
-            self._handle_tamper(event)
-            return
-
-        if event.event_type == ControllerEventType.DOOR_OPEN:
-            self._locker_door_closed[event.locker_id] = False
-            logger.info("Background DOOR_OPEN locker_id=%s", event.locker_id)
-            return
-
-        if event.event_type == ControllerEventType.DOOR_CLOSED:
-            self._locker_door_closed[event.locker_id] = True
-            logger.info("Background DOOR_CLOSED locker_id=%s", event.locker_id)
-            return
-
-        logger.info("Unhandled background event type=%s", event.event_type.value)
-
-    def _handle_heartbeat(self, event: ControllerEvent) -> None:
-        ts = self._extract_ts_ms(event.payload)
-        self._locker_last_heartbeat_ms[event.locker_id] = ts
-
-        door_closed = event.payload.get("doorClosed")
-        if isinstance(door_closed, bool):
-            self._locker_door_closed[event.locker_id] = door_closed
-
-        logger.info(
-            "HEARTBEAT locker_id=%s door_closed=%s",
-            event.locker_id,
-            self._locker_door_closed.get(event.locker_id),
-        )
-
-        self._repo_try_call(
-            "update_locker_heartbeat",
-            sector_id=self._device_context.sector_id,
-            locker_id=event.locker_id,
-            heartbeat_at_ms=ts,
-        )
-
-    def _handle_tamper(self, event: ControllerEvent) -> None:
-        ts = self._extract_ts_ms(event.payload)
-        self._locker_last_tamper_ms[event.locker_id] = ts
-
-        logger.warning("TAMPER locker_id=%s payload=%s", event.locker_id, event.payload)
-
-        self._repo_try_call(
-            "update_locker_tamper",
-            sector_id=self._device_context.sector_id,
-            locker_id=event.locker_id,
-            tamper_flag=True,
-            tamper_at_ms=ts,
-        )
-    # ------------------------------------------------------------------
-    # Session events
-    # ------------------------------------------------------------------
-
-    def _handle_session_event(self, event: ControllerEvent) -> None:
-        assert self._active_session is not None
 
         if event.event_type == ControllerEventType.OPEN_ACK:
             self._on_open_ack(event)
-            return
-
-        if event.event_type == ControllerEventType.OPEN_DENIED:
-            self._on_open_denied(event)
-            return
-
-        if event.event_type == ControllerEventType.WEIGHT_MEASURED:
+        elif event.event_type == ControllerEventType.OPEN_DENIED:
+            self._fail_active_session("OPEN_DENIED")
+        elif event.event_type == ControllerEventType.WEIGHT_MEASURED:
             self._on_weight_measured(event)
-            return
-
-        if event.event_type == ControllerEventType.DOOR_OPEN:
+        elif event.event_type == ControllerEventType.DOOR_OPEN:
             self._locker_door_closed[event.locker_id] = False
-            logger.info("Session DOOR_OPEN locker_id=%s", event.locker_id)
-            return
-
-        if event.event_type == ControllerEventType.DOOR_CLOSED:
+        elif event.event_type == ControllerEventType.DOOR_CLOSED:
             self._locker_door_closed[event.locker_id] = True
-            logger.info("Session DOOR_CLOSED locker_id=%s", event.locker_id)
-            return
-
-        if event.event_type == ControllerEventType.CLOSE_ACK:
+        elif event.event_type == ControllerEventType.CLOSE_ACK:
             self._on_close_ack(event)
-            return
 
-        logger.info("Unhandled session event type=%s", event.event_type.value)
+    def _handle_background(self, event: ControllerEvent) -> None:
+        if event.event_type == ControllerEventType.HEARTBEAT:
+            self._firebase_repo.update_locker_heartbeat(
+                sector_id=self._device_context.sector_id,
+                locker_id=event.locker_id,
+                heartbeat_at_ms=self._extract_ts_ms(event.payload),
+            )
+            return
+        if event.event_type == ControllerEventType.TAMPER:
+            self._firebase_repo.update_locker_tamper(
+                sector_id=self._device_context.sector_id,
+                locker_id=event.locker_id,
+                tamper_flag=True,
+                tamper_at_ms=self._extract_ts_ms(event.payload),
+            )
 
     def _on_open_ack(self, event: ControllerEvent) -> None:
         assert self._active_session is not None
 
-        ok = bool(event.payload.get("ok", True))
-        if not ok:
-            reason = str(event.payload.get("detail") or "OPEN_ACK_NOT_OK")
-            logger.warning("OPEN_ACK not ok reason=%s", reason)
-            self._fail_active_session(reason)
+        self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
+        self._append_booking_event("UNLOCK_GRANTED", {"requestId": self._active_session.request_id})
+
+        purpose = self._purpose()
+        if purpose == self.PURPOSE_COURIER_DROP:
+            self._active_session = replace(self._active_session, phase=SessionPhase.WAITING_FOR_OTHER_GATES)
+            self._show_weight_wait_ui(self._active_session, "Waiting for weight measurement")
             return
 
-        now = self._now_dt()
-        self._active_session = replace(
-            self._active_session,
-            opened_at=now,
-            phase=(
-                SessionPhase.WAITING_FOR_OTHER_GATES
-                if self._purpose() == self.PURPOSE_COURIER_DROP
-                else SessionPhase.WAITING_FOR_SIGNATURE
-            ),
-        )
-
-        logger.info(
-            "OPEN granted request_id=%s phase=%s",
-            self._active_session.request_id,
-            self._active_session.phase.value,
-        )
-
-        self._mark_token_used(self._active_session.token_id)
-        self._append_booking_event(
-            booking_id=self._active_session.booking_id,
-            event_type="UNLOCK_GRANTED",
-            data={"requestId": self._active_session.request_id},
-        )
-
-        # USER_PICKUP goes directly to signature.
-        if self._purpose() == self.PURPOSE_USER_PICKUP:
-            self._show_signature_ui(self._active_session)
-            self._capture_signature_and_maybe_close()
-
-    def _on_open_denied(self, event: ControllerEvent) -> None:
-        reason = str(event.payload.get("detail") or "OPEN_DENIED")
-        logger.warning("OPEN denied reason=%s", reason)
-        self._fail_active_session(reason)
+        self._active_session = replace(self._active_session, phase=SessionPhase.WAITING_FOR_SIGNATURE)
+        self._show_signature_ui(self._active_session)
+        self._capture_signature_and_close_if_ready()
 
     def _on_weight_measured(self, event: ControllerEvent) -> None:
         assert self._active_session is not None
-
         if self._purpose() != self.PURPOSE_COURIER_DROP:
-            logger.info("Ignoring WEIGHT_MEASURED for non-courier purpose")
             return
 
-        measured = event.payload.get("weightGrams")
-        if measured is None:
-            logger.warning("WEIGHT_MEASURED missing weightGrams")
-            return
-
+        weight = event.payload.get("weightGrams")
         try:
-            measured_int = int(measured)
-        except (TypeError, ValueError):
-            logger.warning("Invalid weightGrams=%r", measured)
+            measured = int(weight)
+        except Exception:
             return
 
-        self._active_session = replace(
-            self._active_session,
-            weight_measured_grams=measured_int,
-        )
-
+        self._active_session = replace(self._active_session, weight_measured_grams=measured)
         accepted, reason = self._close_gates.evaluate_weight_only(self._active_session)
-        self._active_session = replace(
-            self._active_session,
-            weight_accepted=accepted,
-        )
+        self._active_session = replace(self._active_session, weight_accepted=accepted)
 
-        logger.info(
-            "Weight measured expected=%s measured=%s accepted=%s reason=%s",
-            self._active_session.weight_expected_grams,
-            self._active_session.weight_measured_grams,
-            accepted,
-            reason,
+        self._firebase_repo.update_booking_measured_weight(
+            booking_id=self._active_session.booking_id,
+            measured_weight_grams=measured,
         )
-
         self._append_booking_event(
-            booking_id=self._active_session.booking_id,
-            event_type="WEIGHT_MEASURED",
-            data={
-                "requestId": self._active_session.request_id,
-                "measuredWeightGrams": measured_int,
-                "accepted": accepted,
-                "reason": reason,
-            },
-        )
-
-        self._repo_try_call(
-            "update_booking_measured_weight",
-            booking_id=self._active_session.booking_id,
-            measured_weight_grams=measured_int,
+            "WEIGHT_MEASURED",
+            {"measuredWeightGrams": measured, "accepted": accepted, "reason": reason},
         )
 
         if not accepted:
-            # Remain in WAITING_FOR_OTHER_GATES until weight becomes valid.
             self._show_weight_wait_ui(self._active_session, reason)
             return
 
-        logger.info("Weight accepted request_id=%s", self._active_session.request_id)
+        self._active_session = replace(self._active_session, phase=SessionPhase.WAITING_FOR_SIGNATURE)
         self._show_signature_ui(self._active_session)
-        self._active_session = replace(
-            self._active_session,
-            phase=SessionPhase.WAITING_FOR_SIGNATURE,
-        )
-        self._capture_signature_and_maybe_close()
+        self._capture_signature_and_close_if_ready()
 
-    def _on_close_ack(self, event: ControllerEvent) -> None:
+    def _capture_signature_and_close_if_ready(self) -> None:
         assert self._active_session is not None
 
-        ok = bool(event.payload.get("ok", True))
-        if not ok:
-            reason = str(event.payload.get("detail") or "CLOSE_ACK_NOT_OK")
-            logger.warning("CLOSE_ACK not ok reason=%s", reason)
-            self._fail_active_session(reason)
-            return
-
-        self._locker_door_closed[self._active_session.locker_id] = True
-        now = self._now_dt()
-
-        finished_session = replace(
-            self._active_session,
-            completed_at=now,
-            phase=SessionPhase.COMPLETED,
-        )
-        self._active_session = finished_session
-
-        logger.info(
-            "Session completed request_id=%s booking_id=%s purpose=%s",
-            finished_session.request_id,
-            finished_session.booking_id,
-            self._purpose(),
-        )
-
-        self._append_booking_event(
-            booking_id=finished_session.booking_id,
-            event_type="STATUS_CHANGED",
-            data={
-                "requestId": finished_session.request_id,
-                "phase": finished_session.phase.value,
-                "purpose": self._purpose(),
-            },
-        )
-
-        self._repo_try_call(
-            "update_locker_state_post_session",
-            sector_id=finished_session.sector_id,
-            locker_id=finished_session.locker_id,
-            booking_id=finished_session.booking_id,
-            purpose=self._purpose(),
-        )
-
-        self._repo_try_call(
-            "update_booking_status_post_session",
-            booking_id=finished_session.booking_id,
-            purpose=self._purpose(),
-        )
-
-        if self._purpose() == self.PURPOSE_COURIER_DROP:
-            self._notify_user_drop_completed(finished_session.booking_id)
-
-        self._show_completed_ui(finished_session)
-        self._clear_active_session()
-    # ------------------------------------------------------------------
-    # Signature + close
-    # ------------------------------------------------------------------
-
-    def _capture_signature_and_maybe_close(self) -> None:
-        assert self._active_session is not None
-
-        signer_role = self._signature_role_for_purpose()
-
-        result: SignatureResult = self._signature_capture.capture_signature(
+        signer_role = "courier" if self._purpose() == self.PURPOSE_COURIER_DROP else "user"
+        signature: SignatureResult = self._signature_capture.capture_signature(
             session=self._active_session,
             signer_role=signer_role,
-            prompt_text=self._signature_prompt_for_purpose(),
+            prompt_text="Please sign before closing the locker.",
         )
 
-        if not result.captured or not result.valid:
-            logger.warning(
-                "Signature capture failed valid=%s reason=%s",
-                result.valid,
-                result.validation_reason,
-            )
-            self._show_signature_failed_ui(result.validation_reason)
+        if not signature.captured or not signature.valid:
+            self._show_signature_failed_ui(signature.validation_reason)
             return
 
         self._active_session = replace(
             self._active_session,
-            signature_captured_at=result.signed_at,
-            signature_path=result.local_file_path,
+            signature_captured_at=signature.signed_at,
+            signature_path=signature.local_file_path,
             phase=SessionPhase.READY_TO_CLOSE,
-        )
-
-        logger.info(
-            "Signature captured request_id=%s path=%s",
-            self._active_session.request_id,
-            self._active_session.signature_path,
-        )
-
-        self._append_booking_event(
-            booking_id=self._active_session.booking_id,
-            event_type="STATUS_CHANGED",
-            data={
-                "requestId": self._active_session.request_id,
-                "signatureCaptured": True,
-                "signerRole": result.signer_role,
-                "signaturePath": result.local_file_path,
-            },
         )
 
         self._attempt_close_if_ready()
 
     def _attempt_close_if_ready(self) -> None:
         assert self._active_session is not None
-
-        require_weight = (self._purpose() == self.PURPOSE_COURIER_DROP)
-        self._set_close_gates_weight_requirement(require_weight)
+        self._close_gates._config.require_weight = self._purpose() == self.PURPOSE_COURIER_DROP
 
         result: CloseGateResult = self._close_gates.evaluate(
             self._active_session,
             door_closed=self._locker_door_closed.get(self._active_session.locker_id),
         )
-
         if not result.can_close:
-            logger.info(
-                "Close blocked request_id=%s reasons=%s",
-                self._active_session.request_id,
-                result.blocking_reasons,
-            )
-            self._show_close_blocked_ui(result.blocking_reasons)
+            self._show_close_blocked_ui(result.blocking_reasons or [])
             return
 
-        now = self._now_dt()
-        self._active_session = replace(
-            self._active_session,
-            close_requested_at=now,
-            phase=SessionPhase.CLOSING,
-        )
-
+        self._active_session = replace(self._active_session, phase=SessionPhase.CLOSING)
         self._show_closing_ui(self._active_session)
         self._publish_close(self._active_session)
+        self._active_close_sent_mono = time.monotonic()
 
-    # ------------------------------------------------------------------
-    # Publish helpers
-    # ------------------------------------------------------------------
+    def _on_close_ack(self, event: ControllerEvent) -> None:
+        assert self._active_session is not None
+
+        purpose = self._purpose()
+        self._firebase_repo.update_locker_state_post_session(
+            sector_id=self._active_session.sector_id,
+            locker_id=self._active_session.locker_id,
+            booking_id=self._active_session.booking_id,
+            purpose=purpose,
+        )
+        self._firebase_repo.update_booking_status_post_session(
+            booking_id=self._active_session.booking_id,
+            purpose=purpose,
+        )
+
+        if purpose == self.PURPOSE_COURIER_DROP:
+            self._issue_pickup_token_and_notify(self._active_session.booking_id)
+
+        self._show_completed_ui(self._active_session)
+        self._clear_active_session()
+
+    def _issue_pickup_token_and_notify(self, booking_id: str) -> None:
+        if self._token_service is None:
+            logger.warning("Token service missing; cannot issue USER_PICKUP token")
+            return
+
+        try:
+            issued = self._token_service.issue_user_pickup_token(booking_id)
+            booking = self._firebase_repo.get_booking(booking_id) or {}
+            user_id = booking.get("userId")
+            profile = self._firebase_repo.get_profile(user_id) if user_id else None
+            email = (profile or {}).get("email")
+            display_name = (profile or {}).get("displayName") or "customer"
+            if email and self._email_notifier is not None:
+                self._email_notifier.send_token_email_async(
+                    to_email=email,
+                    recipient_name=display_name,
+                    booking_id=booking_id,
+                    token_id=issued.token_id,
+                    purpose=issued.purpose,
+                )
+        except Exception:
+            logger.exception("Failed to issue pickup token / send notification booking_id=%s", booking_id)
+
+    def _check_session_timeouts(self) -> bool:
+        if self._active_session is None:
+            return False
+
+        now = time.monotonic()
+        if self._active_session.phase == SessionPhase.UNLOCKING and self._active_open_sent_mono is not None:
+            if now - self._active_open_sent_mono > self._open_ack_timeout_s:
+                self._fail_active_session("OPEN_ACK_TIMEOUT")
+                return True
+        if self._active_session.phase == SessionPhase.CLOSING and self._active_close_sent_mono is not None:
+            if now - self._active_close_sent_mono > self._close_ack_timeout_s:
+                self._fail_active_session("CLOSE_ACK_TIMEOUT")
+                return True
+        return False
+
+    def _build_session(self, token_id: str, validation: ValidationResult) -> LockerSession:
+        token_data = validation.token_data or {}
+        booking_data = validation.booking_data or {}
+        booking_id = str(token_data.get("bookingId") or "")
+        return LockerSession(
+            request_id=f"req_{uuid.uuid4().hex[:10]}",
+            token_id=token_id,
+            booking_id=booking_id,
+            locker_id=str(token_data.get("lockerId") or booking_data.get("lockerId") or ""),
+            sector_id=str(token_data.get("sectorId") or self._device_context.sector_id),
+            device_uid=self._device_context.device_uid,
+            phase=SessionPhase.UNLOCKING,
+            created_at=datetime.now(timezone.utc),
+            weight_expected_grams=booking_data.get("expectedWeightGrams"),
+        )
+
+    def _validate_token(self, token_id: str) -> ValidationResult:
+        if hasattr(self._access_validator, "validate"):
+            return self._access_validator.validate(token_id=token_id)
+        return self._access_validator(token_id)
+
+    def _create_unlock_records(self, *, granted: bool, reason: str, session: LockerSession) -> None:
+        request_id = self._firebase_repo.create_unlock_request(
+            token_id=session.token_id,
+            booking_id=session.booking_id,
+            sector_id=session.sector_id,
+            locker_id=session.locker_id,
+            actor_uid=self._device_context.device_uid,
+            request_id=session.request_id,
+        )
+        self._firebase_repo.create_unlock_grant(
+            request_id=request_id,
+            granted=granted,
+            reason=reason,
+            mqtt_topic=f"droplock/{session.sector_id}/{session.locker_id}/cmd",
+            mqtt_payload="OPEN",
+        )
 
     def _publish_open(self, session: LockerSession) -> None:
-        logger.info(
-            "Publishing OPEN request_id=%s locker_id=%s booking_id=%s",
-            session.request_id,
-            session.locker_id,
-            session.booking_id,
-        )
         self._mqtt_client.publish_open(
             request_id=session.request_id,
             locker_id=session.locker_id,
@@ -668,12 +379,6 @@ class SessionOrchestrator:
         )
 
     def _publish_close(self, session: LockerSession) -> None:
-        logger.info(
-            "Publishing CLOSE request_id=%s locker_id=%s booking_id=%s",
-            session.request_id,
-            session.locker_id,
-            session.booking_id,
-        )
         self._mqtt_client.publish_close(
             request_id=session.request_id,
             locker_id=session.locker_id,
@@ -682,327 +387,97 @@ class SessionOrchestrator:
             token_id=session.token_id,
         )
 
-    # ------------------------------------------------------------------
-    # Failure / cleanup
-    # ------------------------------------------------------------------
-
     def _fail_active_session(self, reason: str) -> None:
         if self._active_session is not None:
-            self._append_booking_event(
-                booking_id=self._active_session.booking_id,
-                event_type="UNLOCK_DENIED",
-                data={
-                    "requestId": self._active_session.request_id,
-                    "reason": reason,
-                },
-            )
-
-        logger.error("Active session failed reason=%s", reason)
+            self._append_booking_event("UNLOCK_DENIED", {"reason": reason})
         self._show_error_ui(reason)
         self._clear_active_session()
 
     def _clear_active_session(self) -> None:
         self._active_session = None
         self._active_validation = None
+        self._active_open_sent_mono = None
+        self._active_close_sent_mono = None
         self._show_idle_ui()
-    # ------------------------------------------------------------------
-    # Validator / parser / repo adapters
-    # ------------------------------------------------------------------
 
-    def _validate_token(self, token_id: str) -> ValidationResult:
-        """
-        Flexible adapter so small interface differences do not break orchestration.
-        """
-        validator = self._access_validator
-
-        if hasattr(validator, "validate"):
-            try:
-                return validator.validate(token_id, self._device_context.sector_id)
-            except TypeError:
-                pass
-
-            try:
-                return validator.validate(token_id=token_id, device_context=self._device_context)
-            except TypeError:
-                pass
-
-            try:
-                return validator.validate(token_id=token_id, sector_id=self._device_context.sector_id)
-            except TypeError:
-                pass
-
-        if hasattr(validator, "validate_token"):
-            try:
-                return validator.validate_token(token_id=token_id, device_context=self._device_context)
-            except TypeError:
-                pass
-
-            try:
-                return validator.validate_token(token_id, self._device_context.sector_id)
-            except TypeError:
-                pass
-
-        raise RuntimeError("Could not call access validator with known method signatures")
-
-    def _parse_controller_event(self, raw_msg: Any) -> ControllerEvent | None:
-        parser = self._controller_event_parser
-
-        if hasattr(parser, "parse"):
-            return parser.parse(raw_msg)
-
-        raise RuntimeError("Controller event parser does not expose parse(raw_msg)")
-
-    def _mark_token_used(self, token_id: str) -> None:
-        logger.info("Marking token used token_id=%s", token_id)
-        self._firebase_repo.mark_qr_token_used(token_id=token_id, used_at_ms=self._now_ms())
-
-    def _append_booking_event(
-        self,
-        *,
-        booking_id: str,
-        event_type: str,
-        data: dict[str, Any],
-    ) -> None:
-        self._repo_try_call(
-            "append_booking_event",
-            booking_id=booking_id,
+    def _append_booking_event(self, event_type: str, data: dict[str, Any]) -> None:
+        if self._active_session is None:
+            return
+        self._firebase_repo.append_booking_event(
+            booking_id=self._active_session.booking_id,
             event_type=event_type,
             actor_uid=self._device_context.device_uid,
             data=data,
         )
 
-    def _repo_try_call(self, method_name: str, **kwargs: Any) -> Any:
-        method = getattr(self._firebase_repo, method_name, None)
-        if method is None:
-            return None
+    def _purpose(self) -> str:
+        if not self._active_validation or not self._active_validation.token_data:
+            return ""
+        return str(self._active_validation.token_data.get("purpose") or "")
 
-        try:
-            return method(**kwargs)
-        except Exception:
-            logger.exception("Repo helper failed method=%s kwargs=%s", method_name, kwargs)
-            return None
-
-    # ------------------------------------------------------------------
-    # Notification hook
-    # ------------------------------------------------------------------
-
-    def _notify_user_drop_completed(self, booking_id: str) -> None:
-        """
-        Hook for later SMTP integration.
-
-        Expected data path:
-        qrTokens -> bookingId -> bookings/{bookingId}/userId -> profiles/{userId}/email
-        """
-        if self._email_notifier is None:
-            logger.info("No email notifier configured; skipping courier completion email")
-            return
-
-        try:
-            booking = self._firebase_repo.get_booking(booking_id)
-            if not booking:
-                logger.warning("Cannot notify user; booking missing booking_id=%s", booking_id)
-                return
-
-            user_id = booking.get("userId")
-            if not user_id:
-                logger.warning("Cannot notify user; booking missing userId booking_id=%s", booking_id)
-                return
-
-            profile = self._firebase_repo.get_profile(user_id)
-            if not profile:
-                logger.warning("Cannot notify user; profile missing user_id=%s", user_id)
-                return
-
-            target_email = profile.get("email")
-            if not target_email:
-                logger.warning("Cannot notify user; profile missing email user_id=%s", user_id)
-                return
-
-            if hasattr(self._email_notifier, "notify_drop_completed"):
-                self._email_notifier.notify_drop_completed(
-                    booking_id=booking_id,
-                    target_email=target_email,
-                    profile=profile,
-                    booking=booking,
-                )
-            elif hasattr(self._email_notifier, "send_drop_completed_email"):
-                self._email_notifier.send_drop_completed_email(
-                    booking_id=booking_id,
-                    target_email=target_email,
-                    profile=profile,
-                    booking=booking,
-                )
-            else:
-                logger.warning("Email notifier configured but no known notify method found")
-
-        except Exception:
-            logger.exception("Courier completion email failed booking_id=%s", booking_id)
-    # ------------------------------------------------------------------
-    # Internal utility
-    # ------------------------------------------------------------------
-
-    def _get_scan_nowait(self) -> Optional[str]:
-        scanner = self._scanner_input
-
-        if hasattr(scanner, "get_scan_nowait"):
-            return scanner.get_scan_nowait()
-
-        if hasattr(scanner, "get_scan"):
-            try:
-                return scanner.get_scan(timeout=0.0)
-            except TypeError:
-                return scanner.get_scan()
-
-        raise RuntimeError("Scanner input does not expose a known scan API")
-
-    def _get_mqtt_message(self, timeout: float) -> Any | None:
-        mqtt_client = self._mqtt_client
-
-        if hasattr(mqtt_client, "get_message"):
-            return mqtt_client.get_message(timeout=timeout)
-
-        raise RuntimeError("MQTT client does not expose get_message(timeout=...)")
+    @staticmethod
+    def _extract_ts_ms(payload: dict[str, Any] | None) -> int:
+        if payload and isinstance(payload.get("ts"), int):
+            return int(payload["ts"])
+        return int(time.time() * 1000)
 
     def _ensure_scanner_started(self) -> None:
         if hasattr(self._scanner_input, "start"):
-            try:
-                self._scanner_input.start()
-            except RuntimeError:
-                # already started
-                pass
+            self._scanner_input.start()
 
     def _ensure_mqtt_started(self) -> None:
         if hasattr(self._mqtt_client, "is_running") and self._mqtt_client.is_running():
             return
-
         self._mqtt_client.start()
 
-    def _make_request_id(self) -> str:
-        return f"req_{uuid.uuid4().hex[:10]}"
-
-    def _purpose(self) -> str:
-        if self._active_validation is None or not self._active_validation.token_data:
-            return ""
-        return str(self._active_validation.token_data.get("purpose") or "")
-
-    def _signature_role_for_purpose(self) -> str:
-        if self._purpose() == self.PURPOSE_COURIER_DROP:
-            return "courier"
-        if self._purpose() == self.PURPOSE_USER_PICKUP:
-            return "user"
-        return "unknown"
-
-    def _signature_prompt_for_purpose(self) -> str:
-        if self._purpose() == self.PURPOSE_COURIER_DROP:
-            return "Courier signature required after valid weight confirmation."
-        if self._purpose() == self.PURPOSE_USER_PICKUP:
-            return "User signature required before closing the locker."
-        return "Signature required before closing the locker."
-
-    def _set_close_gates_weight_requirement(self, require_weight: bool) -> None:
-        """
-        Adjust weight requirement dynamically by purpose without redesigning CloseGates.
-        """
-        cfg = getattr(self._close_gates, "_config", None)
-        if cfg is None:
-            return
-
-        # mutate config intentionally; orchestrator owns usage policy
-        try:
-            cfg.require_weight = require_weight
-        except Exception:
-            pass
-
-    def _session_age_s(self, now_monotonic: float, use_close_requested: bool = False) -> float:
-        assert self._active_session is not None
-        anchor = self._active_session.created_at
-
-        if use_close_requested and self._active_session.close_requested_at is not None:
-            anchor = self._active_session.close_requested_at
-
-        return now_monotonic - anchor.timestamp()
-
-    @staticmethod
-    def _extract_ts_ms(payload: dict[str, Any]) -> int:
-        ts = payload.get("ts")
-        if isinstance(ts, int):
-            return ts
-        return int(time.time() * 1000)
-
-    @staticmethod
-    def _now_dt() -> datetime:
-        return datetime.now(timezone.utc)
-
-    @staticmethod
-    def _now_ms() -> int:
-        return int(time.time() * 1000)
-
     def _log_event(self, name: str, **data: Any) -> None:
-        if self._event_logger is None:
-            return
-
-        if hasattr(self._event_logger, "log"):
-            try:
-                self._event_logger.log(name=name, **data)
-            except Exception:
-                logger.exception("event_logger.log failed")
-                return
-
-        if hasattr(self._event_logger, "info"):
-            try:
-                self._event_logger.info(name, extra=data)
-            except Exception:
-                logger.exception("event_logger.info failed")
-
-    # ------------------------------------------------------------------
-    # Optional UI hooks
-    # ------------------------------------------------------------------
+        if self._event_logger is not None:
+            self._event_logger.log(name, **data)
 
     def _show_idle_ui(self) -> None:
-        self._ui_try("show_idle")
+        if self._ui_controller:
+            self._ui_controller.show_idle()
 
     def _show_validating_ui(self, token_id: str) -> None:
-        self._ui_try("show_validating", token_id=token_id)
-
-    def _show_unlocking_ui(self, session: LockerSession) -> None:
-        self._ui_try("show_unlocking", session=session)
-
-    def _show_weight_wait_ui(self, session: LockerSession, reason: str) -> None:
-        self._ui_try("show_weight_wait", session=session, reason=reason)
-
-    def _show_signature_ui(self, session: LockerSession) -> None:
-        self._ui_try("show_signature", session=session)
-
-    def _show_closing_ui(self, session: LockerSession) -> None:
-        self._ui_try("show_closing", session=session)
-
-    def _show_completed_ui(self, session: LockerSession) -> None:
-        self._ui_try("show_completed", session=session)
+        if self._ui_controller:
+            self._ui_controller.show_validating(token_id=token_id)
 
     def _show_denied_ui(self, token_id: str, reason: str) -> None:
-        self._ui_try("show_denied", token_id=token_id, reason=reason)
+        if self._ui_controller:
+            self._ui_controller.show_denied(token_id=token_id, reason=reason)
 
-    def _show_error_ui(self, reason: str) -> None:
-        self._ui_try("show_error", reason=reason)
+    def _show_unlocking_ui(self, session: LockerSession) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_unlocking(session=session)
 
-    def _show_close_blocked_ui(self, blocking_reasons: list[str]) -> None:
-        self._ui_try("show_close_blocked", blocking_reasons=blocking_reasons)
+    def _show_weight_wait_ui(self, session: LockerSession, reason: str) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_weight_wait(session=session, reason=reason)
 
-    def _show_signature_failed_ui(self, reason: str) -> None:
-        self._ui_try("show_signature_failed", reason=reason)
+    def _show_signature_ui(self, session: LockerSession) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_signature(session=session)
+
+    def _show_closing_ui(self, session: LockerSession) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_closing(session=session)
+
+    def _show_completed_ui(self, session: LockerSession) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_completed(session=session)
 
     def _show_busy_ui(self, token_id: str) -> None:
-        self._ui_try("show_busy", token_id=token_id)
+        if self._ui_controller:
+            self._ui_controller.show_busy(token_id=token_id)
 
-    def _ui_try(self, method_name: str, **kwargs: Any) -> None:
-        if self._ui_controller is None:
-            return
+    def _show_error_ui(self, reason: str) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_error(reason=reason)
 
-        method = getattr(self._ui_controller, method_name, None)
-        if method is None:
-            return
+    def _show_signature_failed_ui(self, reason: str | None) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_signature_failed(reason=reason)
 
-        try:
-            method(**kwargs)
-        except Exception:
-            logger.exception("UI method failed method=%s kwargs=%s", method_name, kwargs)
+    def _show_close_blocked_ui(self, reasons: list[str]) -> None:
+        if self._ui_controller:
+            self._ui_controller.show_close_blocked(blocking_reasons=reasons)

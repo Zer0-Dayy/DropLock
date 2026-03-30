@@ -73,7 +73,14 @@ class EmailNotifier:
         token_id: str,
         purpose: str,
     ) -> None:
-        png_data = self._build_qr_png(token_id)
+        png_data: bytes | None = None
+        try:
+            png_data = self._build_qr_png(token_id)
+        except Exception:
+            logger.warning(
+                "QR image generation unavailable; sending token email without PNG attachment token_id=%s",
+                token_id,
+            )
 
         subject = "DropLock QR code"
         action = "drop" if purpose == "COURIER_DROP" else "pickup"
@@ -89,12 +96,13 @@ class EmailNotifier:
         message["To"] = to_email
         message["Subject"] = subject
         message.set_content(text)
-        message.add_attachment(
-            png_data,
-            maintype="image",
-            subtype="png",
-            filename=f"droplock_{purpose.lower()}_{booking_id}.png",
-        )
+        if png_data is not None:
+            message.add_attachment(
+                png_data,
+                maintype="image",
+                subtype="png",
+                filename=f"droplock_{purpose.lower()}_{booking_id}.png",
+            )
 
         with smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=15) as smtp:
             if self._use_tls:

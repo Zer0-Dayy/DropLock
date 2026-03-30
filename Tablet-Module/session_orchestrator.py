@@ -124,9 +124,16 @@ class SessionOrchestrator:
         self._active_session = session
         self._active_validation = validation
 
-        self._create_unlock_records(granted=True, reason="OK", session=session)
         self._show_unlocking_ui(session)
-        self._publish_open(session)
+        try:
+            self._publish_open(session)
+        except Exception as exc:
+            logger.warning("Failed to publish OPEN request_id=%s locker_id=%s: %s", session.request_id, session.locker_id, exc)
+            self._show_error_ui("Controller offline. Please scan again.")
+            self._clear_active_session()
+            return True
+
+        self._create_unlock_records(granted=True, reason="OK", session=session)
         self._active_open_sent_mono = time.monotonic()
         return True
 

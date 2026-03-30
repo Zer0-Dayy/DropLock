@@ -2,7 +2,9 @@ import unittest
 from types import SimpleNamespace
 
 from close_gates import CloseGates
-from session_models import ValidationResult
+from datetime import datetime
+
+from session_models import LockerSession, SessionPhase, ValidationResult
 from session_orchestrator import SessionOrchestrator
 
 
@@ -51,6 +53,9 @@ class _UI:
 
     def show_error(self, *, reason: str):
         self.errors.append(reason)
+
+    def show_closing(self, **kwargs):
+        return None
 
     def show_idle(self):
         return None
@@ -124,6 +129,51 @@ class SessionOrchestratorCloseAckFailureTests(unittest.TestCase):
         self.assertIsNone(orchestrator._active_session)
         self.assertTrue(ui.errors)
         self.assertFalse(ui.completed)
+
+
+class _MQTTCloseFail:
+    def is_connected(self):
+        return True
+
+    def publish_close(self, **kwargs):
+        raise RuntimeError("MQTT client not connected")
+
+
+class SessionOrchestratorClosePublishFailureTests(unittest.TestCase):
+    def test_attempt_close_if_ready_handles_publish_failure_without_crashing(self):
+        ui = _UIWithCompleted()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=_MQTTCloseFail(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=SimpleNamespace(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=ui,
+        )
+        orchestrator._active_validation = ValidationResult(
+            allowed=True,
+            token_data={"purpose": "USER_PICKUP"},
+        )
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.READY_TO_CLOSE,
+            signature_path="/tmp/sign.png",
+            signature_captured_at=datetime.utcnow(),
+        )
+
+        orchestrator._attempt_close_if_ready()
+
+        self.assertIsNotNone(orchestrator._active_session)
+        self.assertEqual(orchestrator._active_session.phase, SessionPhase.READY_TO_CLOSE)
+        self.assertTrue(ui.errors)
 
 
 if __name__ == "__main__":

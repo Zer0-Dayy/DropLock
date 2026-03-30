@@ -302,7 +302,20 @@ class SessionOrchestrator:
 
         self._active_session = replace(self._active_session, phase=SessionPhase.CLOSING)
         self._show_closing_ui(self._active_session)
-        self._publish_close(self._active_session)
+        try:
+            self._publish_close(self._active_session)
+        except Exception as exc:
+            logger.warning(
+                "Failed to publish CLOSE request_id=%s locker_id=%s: %s",
+                self._active_session.request_id,
+                self._active_session.locker_id,
+                exc,
+            )
+            self._active_session = replace(self._active_session, phase=SessionPhase.READY_TO_CLOSE)
+            self._active_close_sent_mono = None
+            self._show_error_ui("Controller offline while closing. Retrying...")
+            return
+
         self._active_close_sent_mono = time.monotonic()
 
     def _persist_weight_update_async(
@@ -396,6 +409,12 @@ class SessionOrchestrator:
             return False
 
         now = time.monotonic()
+        if self._active_session.phase == SessionPhase.READY_TO_CLOSE and self._active_close_sent_mono is None:
+            mqtt_connected = hasattr(self._mqtt_client, "is_connected") and self._mqtt_client.is_connected()
+            if mqtt_connected:
+                self._attempt_close_if_ready()
+                return True
+
         if self._active_session.phase == SessionPhase.UNLOCKING and self._active_open_sent_mono is not None:
             if now - self._active_open_sent_mono > self._open_ack_timeout_s:
                 self._fail_active_session("OPEN_ACK_TIMEOUT")

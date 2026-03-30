@@ -44,6 +44,7 @@ class UIController:
         self._state = UIState("idle", "DropLock Tablet", "Scan QR to begin", self._now_iso())
 
         self._ui_queue: mp.Queue[dict] | None = None
+        self._scan_queue: mp.Queue[str] | None = None
         self._ui_process: mp.Process | None = None
 
         if self._enable_tk:
@@ -102,14 +103,23 @@ class UIController:
             return
 
         self._ui_queue = mp.Queue(maxsize=100)
+        self._scan_queue = mp.Queue(maxsize=200)
         self._ui_process = mp.Process(
             target=_run_ui_process,
-            args=(self._ui_queue, self._fullscreen),
+            args=(self._ui_queue, self._scan_queue, self._fullscreen),
             daemon=True,
             name="droplock-ui",
         )
         self._ui_process.start()
         self._push_state(self._state)
+
+    def get_scan_nowait(self) -> str | None:
+        if self._scan_queue is None:
+            return None
+        try:
+            return self._scan_queue.get_nowait()
+        except Empty:
+            return None
 
     def _push_state(self, state: UIState) -> None:
         if not self._enable_tk or self._ui_queue is None:
@@ -131,7 +141,7 @@ class UIController:
         return datetime.now(timezone.utc).isoformat()
 
 
-def _run_ui_process(ui_queue: mp.Queue, fullscreen: bool) -> None:
+def _run_ui_process(ui_queue: mp.Queue, scan_queue: mp.Queue, fullscreen: bool) -> None:
     try:
         import tkinter as tk
         from tkinter import ttk
@@ -213,6 +223,32 @@ def _run_ui_process(ui_queue: mp.Queue, fullscreen: bool) -> None:
     progress = ttk.Progressbar(footer, mode="indeterminate", style="Drop.Horizontal.TProgressbar")
     progress.pack(fill="x", padx=10, pady=(0, 6))
     progress.start(30)
+
+    key_buffer: list[str] = []
+
+    def _on_keypress(event) -> None:
+        key = str(getattr(event, "keysym", "") or "")
+        char = str(getattr(event, "char", "") or "")
+
+        if key == "Return":
+            scan_text = "".join(key_buffer).strip()
+            key_buffer.clear()
+            if scan_text:
+                try:
+                    scan_queue.put_nowait(scan_text)
+                except Exception:
+                    logger.warning("UI scan queue is full; dropping scanner input")
+            return
+
+        if key == "BackSpace":
+            if key_buffer:
+                key_buffer.pop()
+            return
+
+        if char and char.isprintable():
+            key_buffer.append(char)
+
+    root.bind("<KeyPress>", _on_keypress)
 
     def poll() -> None:
         while True:

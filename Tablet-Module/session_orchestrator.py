@@ -97,7 +97,7 @@ class SessionOrchestrator:
         self._running = False
 
     def _process_next_scan(self) -> bool:
-        scan = self._scanner_input.get_scan_nowait()
+        scan = self._get_next_scan()
         if scan is None:
             return False
 
@@ -129,6 +129,18 @@ class SessionOrchestrator:
         self._publish_open(session)
         self._active_open_sent_mono = time.monotonic()
         return True
+
+    def _get_next_scan(self) -> Any | None:
+        scan = self._scanner_input.get_scan_nowait()
+        if scan is not None:
+            return scan
+
+        if self._ui_controller and hasattr(self._ui_controller, "get_scan_nowait"):
+            scan_text = self._ui_controller.get_scan_nowait()
+            if scan_text:
+                return scan_text
+
+        return None
 
     def _process_next_mqtt_message(self) -> bool:
         raw_msg = self._mqtt_client.get_message(timeout=self._mqtt_poll_timeout_s)
@@ -207,6 +219,9 @@ class SessionOrchestrator:
     def _on_weight_measured(self, event: ControllerEvent) -> None:
         assert self._active_session is not None
         if self._purpose() != self.PURPOSE_COURIER_DROP:
+            return
+        if self._active_session.phase != SessionPhase.WAITING_FOR_OTHER_GATES:
+            # Ignore late/duplicate weight events after we've moved on.
             return
 
         payload = event.payload or {}

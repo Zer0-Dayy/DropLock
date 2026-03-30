@@ -25,6 +25,7 @@ SECTOR_ID = "S1"
 LOCKER_ID = "Locker 1"
 CLIENT_ID = "droplock-mock-controller-pi"
 HEARTBEAT_SECONDS = 5
+HARDCODED_MEASURED_WEIGHT_GRAMS = 1500
 
 TLS_ENABLED = False
 TLS_CA_CERT_PATH = ""
@@ -101,7 +102,7 @@ def handle_open(client: mqtt.Client, cmd: dict) -> None:
         },
     )
 
-    # First weight (possibly invalid)
+    # Emit one deterministic weight measurement that matches the test booking.
     publish_event(
         client,
         {
@@ -111,11 +112,12 @@ def handle_open(client: mqtt.Client, cmd: dict) -> None:
             "ts": now_ms(),
             "sectorId": SECTOR_ID,
             "lockerId": LOCKER_ID,
-            "weightGrams": 900,
+            "weightGrams": HARDCODED_MEASURED_WEIGHT_GRAMS,
+            "measuredWeightGrams": HARDCODED_MEASURED_WEIGHT_GRAMS,
         },
     )
 
-    # Second weight (valid for many tests)
+    # Re-emit once in case tablet reconnects during the first publish.
     time.sleep(1)
     publish_event(
         client,
@@ -126,7 +128,8 @@ def handle_open(client: mqtt.Client, cmd: dict) -> None:
             "ts": now_ms(),
             "sectorId": SECTOR_ID,
             "lockerId": LOCKER_ID,
-            "weightGrams": 1500,
+            "weightGrams": HARDCODED_MEASURED_WEIGHT_GRAMS,
+            "measuredWeightGrams": HARDCODED_MEASURED_WEIGHT_GRAMS,
         },
     )
 

@@ -25,6 +25,7 @@ from config import (
     OPEN_ACK_TIMEOUT_SEC,
     PICKUP_TOKEN_TTL_SEC,
     SIGNATURE_BASE_PATH,
+    UI_ENABLE_TK,
     UI_FULLSCREEN,
     WEIGHT_TOLERANCE_GRAMS,
     SMTP_FROM_EMAIL,
@@ -110,7 +111,7 @@ def main() -> int:
         validator = AccessValidatorAdapter(repo=repo, device_context=device_ctx)
         parser = ControllerEventParser()
         event_logger = EventLogger()
-        ui_controller = UIController(enable_tk=False, fullscreen=UI_FULLSCREEN)
+        ui_controller = UIController(enable_tk=UI_ENABLE_TK, fullscreen=UI_FULLSCREEN)
         token_service = TokenService(
             repo,
             courier_ttl_sec=COURIER_TOKEN_TTL_SEC,

@@ -332,16 +332,26 @@ class SessionOrchestrator:
         assert self._active_session is not None
 
         purpose = self._purpose()
-        self._firebase_repo.update_locker_state_post_session(
-            sector_id=self._active_session.sector_id,
-            locker_id=self._active_session.locker_id,
-            booking_id=self._active_session.booking_id,
-            purpose=purpose,
-        )
-        self._firebase_repo.update_booking_status_post_session(
-            booking_id=self._active_session.booking_id,
-            purpose=purpose,
-        )
+        try:
+            self._firebase_repo.update_locker_state_post_session(
+                sector_id=self._active_session.sector_id,
+                locker_id=self._active_session.locker_id,
+                booking_id=self._active_session.booking_id,
+                purpose=purpose,
+            )
+            self._firebase_repo.update_booking_status_post_session(
+                booking_id=self._active_session.booking_id,
+                purpose=purpose,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Failed post-session Firebase updates booking_id=%s locker_id=%s",
+                self._active_session.booking_id,
+                self._active_session.locker_id,
+            )
+            self._show_error_ui(f"Failed to finalize booking state: {exc}")
+            self._clear_active_session()
+            return
 
         if purpose == self.PURPOSE_COURIER_DROP:
             self._issue_pickup_token_and_notify(self._active_session.booking_id)

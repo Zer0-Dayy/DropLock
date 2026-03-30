@@ -69,7 +69,7 @@ class ControllerEventParser:
         payload = {
             k: v
             for k, v in data.items()
-            if k not in ("type", "lockerId", "requestId", "sectorId", "ts", "schemaVersion")
+            if k not in ("type", "lockerId", "requestId", "sectorId", "schemaVersion")
         }
 
         event = ControllerEvent(

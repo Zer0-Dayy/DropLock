@@ -7,6 +7,7 @@ import ssl
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 import paho.mqtt.client as mqtt
@@ -21,7 +22,7 @@ class MQTTIncomingMessage:
     payload: str
     qos: int
     retain: bool
-    received_at: float
+    received_at: datetime
 
 
 class MQTTClient:
@@ -411,7 +412,7 @@ class MQTTClient:
         userdata: Any,
         msg: mqtt.MQTTMessage,
     ) -> None:
-        received_at = time.monotonic()
+        received_at = datetime.now(timezone.utc)
 
         try:
             payload_text = msg.payload.decode("utf-8")

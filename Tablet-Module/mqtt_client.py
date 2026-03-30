@@ -42,7 +42,7 @@ class MQTTClient:
         connect_timeout_s: float = 5.0,
         qos_subscribe: int = 1,
         qos_publish: int = 1,
-        clean_session: bool = True,
+        clean_session: bool = False,
         enable_tls: bool = False,
         tls_ca_cert_path: str | None = None,
         tls_client_cert_path: str | None = None,
@@ -315,6 +315,8 @@ class MQTTClient:
             protocol=self._protocol,
             transport="tcp",
         )
+        # Auto-reconnect with backoff so transient Wi‑Fi drops do not require process restart.
+        client.reconnect_delay_set(min_delay=1, max_delay=30)
 
         if self._username:
             client.username_pw_set(self._username, self._password)

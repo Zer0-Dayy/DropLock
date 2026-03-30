@@ -73,6 +73,65 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertEqual(orchestrator._firebase_repo.updated_weight, ("book-1", 1500))
         self.assertTrue(called["capture"])
 
+
+
+    def test_scan_processed_while_idle_ui_visible(self):
+        class FakeScanner:
+            def __init__(self):
+                self.started = False
+                self._returned = False
+
+            def start(self):
+                self.started = True
+
+            def get_scan_nowait(self):
+                if self._returned:
+                    return None
+                self._returned = True
+                return SimpleNamespace(normalized_text="tok-idle")
+
+        class FakeValidator:
+            def validate(self, token_id):
+                return ValidationResult(
+                    allowed=False,
+                    reason="DENIED_FOR_TEST",
+                    token_data={"purpose": "USER_PICKUP"},
+                )
+
+        scanner = FakeScanner()
+        ui_calls = []
+
+        class FakeUI:
+            def show_idle(self):
+                ui_calls.append("idle")
+
+            def show_processing_request(self, token_id):
+                ui_calls.append(f"processing:{token_id}")
+
+            def show_denied(self, token_id, reason):
+                ui_calls.append(f"denied:{token_id}:{reason}")
+
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=scanner,
+            access_validator=FakeValidator(),
+            mqtt_client=SimpleNamespace(start=lambda: None),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=FakeFirebaseRepo(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=FakeUI(),
+        )
+
+        orchestrator.start()
+        processed = orchestrator._process_next_scan()
+
+        self.assertTrue(scanner.started)
+        self.assertTrue(processed)
+        self.assertEqual(ui_calls[0], "idle")
+        self.assertIn("processing:tok-idle", ui_calls)
+        self.assertIn("denied:tok-idle:DENIED_FOR_TEST", ui_calls)
+
     def test_courier_drop_close_ack_issues_pickup_token_and_email(self):
         repo = FakeFirebaseRepo()
         sent_email = {"called": False, "to": None}

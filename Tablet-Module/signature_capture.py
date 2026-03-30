@@ -138,7 +138,7 @@ class SignatureCapture:
         header = tk.Label(
             self._root,
             text=header_text,
-            font=("Arial", 18, "bold"),
+            font=("Arial", 14, "bold"),
             bg="#f3f4f6",
             fg="#111827",
             pady=12,
@@ -148,22 +148,29 @@ class SignatureCapture:
         helper = tk.Label(
             self._root,
             text="Use a finger or stylus. Tap Confirm when finished.",
-            font=("Arial", 12),
+            font=("Arial", 10),
             bg="#f3f4f6",
             fg="#4b5563",
             pady=0,
         )
         helper.grid(row=1, column=0, sticky="ew")
 
-        center_frame = tk.Frame(self._root, bg="#f3f4f6", padx=20, pady=10)
+        center_frame = tk.Frame(self._root, bg="#f3f4f6", padx=8, pady=6)
         center_frame.grid(row=2, column=0, sticky="nsew")
         center_frame.rowconfigure(0, weight=1)
         center_frame.columnconfigure(0, weight=1)
 
+        screen_width = self._root.winfo_screenwidth()
+        screen_height = self._root.winfo_screenheight()
+        usable_width = max(220, screen_width - 40)
+        usable_height = max(120, screen_height - 170)
+        canvas_width = min(self._canvas_width, usable_width)
+        canvas_height = min(self._canvas_height, usable_height)
+
         self._canvas = tk.Canvas(
             center_frame,
-            width=self._canvas_width,
-            height=self._canvas_height,
+            width=canvas_width,
+            height=canvas_height,
             bg=self._background_color,
             highlightthickness=2,
             highlightbackground="#9ca3af",
@@ -175,7 +182,7 @@ class SignatureCapture:
         self._canvas.bind("<B1-Motion>", self._on_pen_move)
         self._canvas.bind("<ButtonRelease-1>", self._on_pen_up)
 
-        footer = tk.Frame(self._root, bg="#f3f4f6", padx=20, pady=16)
+        footer = tk.Frame(self._root, bg="#f3f4f6", padx=8, pady=8)
         footer.grid(row=3, column=0, sticky="ew")
         footer.columnconfigure(0, weight=1)
 
@@ -183,7 +190,7 @@ class SignatureCapture:
         status_label = tk.Label(
             footer,
             textvariable=self._status_var,
-            font=("Arial", 12),
+            font=("Arial", 10),
             bg="#f3f4f6",
             fg="#374151",
             anchor="w",
@@ -193,8 +200,8 @@ class SignatureCapture:
         clear_btn = tk.Button(
             footer,
             text="Clear",
-            width=12,
-            height=2,
+            width=10,
+            height=1,
             bg="#e5e7eb",
             activebackground="#d1d5db",
             command=self._clear_signature,
@@ -204,8 +211,8 @@ class SignatureCapture:
         cancel_btn = tk.Button(
             footer,
             text="Cancel",
-            width=12,
-            height=2,
+            width=10,
+            height=1,
             bg="#fee2e2",
             activebackground="#fecaca",
             command=self._cancel_capture,
@@ -215,8 +222,8 @@ class SignatureCapture:
         confirm_btn = tk.Button(
             footer,
             text="Confirm & Close",
-            width=12,
-            height=2,
+            width=10,
+            height=1,
             bg="#dcfce7",
             activebackground="#bbf7d0",
             command=self._confirm_signature,
@@ -233,17 +240,21 @@ class SignatureCapture:
         self._last_y = None
 
         self._canvas.delete("all")
+        canvas_width = int(self._canvas.winfo_reqwidth())
+        canvas_height = int(self._canvas.winfo_reqheight())
+
         self._canvas.create_text(
-            self._canvas_width // 2,
-            self._canvas_height // 2,
+            canvas_width // 2,
+            canvas_height // 2,
             text="Sign here",
             fill="#d1d5db",
-            font=("Arial", 28, "italic"),
+            font=("Arial", 20, "italic"),
+            tags=("signature_placeholder",),
         )
 
         self._image = Image.new(
             "RGB",
-            (self._canvas_width, self._canvas_height),
+            (canvas_width, canvas_height),
             self._background_color,
         )
         self._draw = ImageDraw.Draw(self._image)
@@ -255,8 +266,8 @@ class SignatureCapture:
     def _on_pen_down(self, event: tk.Event) -> None:
         assert self._canvas is not None
 
-        # Remove placeholder text on first contact
-        self._canvas.delete("all")
+        # Remove placeholder text on first contact, but preserve any prior strokes.
+        self._canvas.delete("signature_placeholder")
 
         self._stats.stroke_count += 1
         self._stats.point_count += 1

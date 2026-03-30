@@ -111,7 +111,7 @@ class SessionOrchestrator:
             self._show_busy_ui(token_id)
             return True
 
-        self._show_validating_ui(token_id)
+        self._show_processing_request_ui(token_id)
         validation = self._validate_token(token_id)
 
         if not validation.allowed:
@@ -195,10 +195,12 @@ class SessionOrchestrator:
         purpose = self._purpose()
         if purpose == self.PURPOSE_COURIER_DROP:
             self._active_session = replace(self._active_session, phase=SessionPhase.WAITING_FOR_OTHER_GATES)
+            self._show_locker_open_ui(self._active_session)
             self._show_weight_wait_ui(self._active_session, "Waiting for weight measurement")
             return
 
         self._active_session = replace(self._active_session, phase=SessionPhase.WAITING_FOR_SIGNATURE)
+        self._show_locker_open_ui(self._active_session)
         self._show_signature_ui(self._active_session)
         self._capture_signature_and_close_if_ready()
 
@@ -479,9 +481,17 @@ class SessionOrchestrator:
         if self._ui_controller:
             self._ui_controller.show_idle()
 
-    def _show_validating_ui(self, token_id: str) -> None:
-        if self._ui_controller:
+    def _show_processing_request_ui(self, token_id: str) -> None:
+        if not self._ui_controller:
+            return
+        if hasattr(self._ui_controller, "show_processing_request"):
+            self._ui_controller.show_processing_request(token_id=token_id)
+        else:
             self._ui_controller.show_validating(token_id=token_id)
+
+    def _show_validating_ui(self, token_id: str) -> None:
+        # Backward-compatible internal alias.
+        self._show_processing_request_ui(token_id)
 
     def _show_denied_ui(self, token_id: str, reason: str) -> None:
         if self._ui_controller:
@@ -489,6 +499,14 @@ class SessionOrchestrator:
 
     def _show_unlocking_ui(self, session: LockerSession) -> None:
         if self._ui_controller:
+            self._ui_controller.show_unlocking(session=session)
+
+    def _show_locker_open_ui(self, session: LockerSession) -> None:
+        if not self._ui_controller:
+            return
+        if hasattr(self._ui_controller, "show_locker_open"):
+            self._ui_controller.show_locker_open(session=session)
+        else:
             self._ui_controller.show_unlocking(session=session)
 
     def _show_weight_wait_ui(self, session: LockerSession, reason: str) -> None:

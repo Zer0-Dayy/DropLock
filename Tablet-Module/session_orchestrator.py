@@ -205,10 +205,14 @@ class SessionOrchestrator:
         if self._purpose() != self.PURPOSE_COURIER_DROP:
             return
 
-        weight = event.payload.get("weightGrams")
+        payload = event.payload or {}
+        weight = payload.get("weightGrams")
+        if weight is None:
+            weight = payload.get("measuredWeightGrams")
         try:
             measured = int(weight)
         except Exception:
+            self._log_event("WEIGHT_PARSE_FAILED", raw_weight=weight, payload=payload)
             return
 
         self._active_session = replace(self._active_session, weight_measured_grams=measured)

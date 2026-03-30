@@ -71,5 +71,4 @@ SMTP_USE_TLS = (optional_env("SMTP_USE_TLS", "true") or "true").lower() == "true
 SMTP_FROM_EMAIL = optional_env("SMTP_FROM_EMAIL", "") or ""
 
 # UI
-UI_ENABLE_TK = (optional_env("UI_ENABLE_TK", "false") or "false").lower() == "true"
 UI_FULLSCREEN = (optional_env("UI_FULLSCREEN", "false") or "false").lower() == "true"

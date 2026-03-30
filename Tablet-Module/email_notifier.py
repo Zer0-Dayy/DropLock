@@ -5,6 +5,7 @@ import logging
 import smtplib
 import threading
 from email.message import EmailMessage
+from typing import Optional
 
 
 logger = logging.getLogger(__name__)

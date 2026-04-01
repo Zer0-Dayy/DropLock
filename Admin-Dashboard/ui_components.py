@@ -10,7 +10,8 @@ from metrics import LockerView
 STATE_COLORS = {
     "AVAILABLE": "🟢 healthy · AVAILABLE",
     "OCCUPIED": "🟠 warning · OCCUPIED",
-    "RESERVED": "🟠 warning · RESERVED",
+    "BOOKED": "🟠 warning · BOOKED",
+    "RESERVED": "🟠 warning · BOOKED",
     "MAINTENANCE": "🛠️ maintenance · MAINTENANCE",
 }
 

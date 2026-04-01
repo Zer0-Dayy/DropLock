@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-LOCKER_STATES = ["AVAILABLE", "RESERVED", "OCCUPIED", "MAINTENANCE"]
+LOCKER_STATES = ["AVAILABLE", "BOOKED", "OCCUPIED", "MAINTENANCE"]
 DEFAULT_HEARTBEAT_TIMEOUT_SEC = 120
 
 

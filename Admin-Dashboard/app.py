@@ -292,10 +292,11 @@ def operations_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str
         cols[3].write(tamper_badge(locker))
         cols[4].write(format_ts(locker.last_heartbeat_at))
 
+        current_state = "BOOKED" if locker.state == "RESERVED" else locker.state
         new_state = cols[5].selectbox(
             "state",
             LOCKER_STATES,
-            index=LOCKER_STATES.index(locker.state) if locker.state in LOCKER_STATES else 0,
+            index=LOCKER_STATES.index(current_state) if current_state in LOCKER_STATES else 0,
             key=f"state_{effective_sector_id}_{locker.locker_id}",
             label_visibility="collapsed",
         )

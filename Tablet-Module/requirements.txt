@@ -1,11 +1,3 @@
-# Tablet-Module runtime dependencies
-# Install with: pip install -r requirements.txt
-
-# HTTP client for Firebase/Auth APIs
 requests>=2.31.0
-
-# MQTT client for locker controller communication
 paho-mqtt>=1.6.1
-
-# QR generation and image handling used in UI/signature flows
 qrcode[pil]>=7.4.2

@@ -5,6 +5,7 @@ import logging
 import smtplib
 import threading
 from email.message import EmailMessage
+from datetime import datetime, timezone
 
 
 logger = logging.getLogger(__name__)
@@ -58,11 +59,44 @@ class EmailNotifier:
         )
         thread.start()
 
+    def send_tamper_alert_email_async(
+        self,
+        *,
+        to_email: str,
+        recipient_name: str,
+        sector_id: str,
+        locker_id: str,
+        detected_at_ms: int,
+    ) -> None:
+        if not self.enabled():
+            logger.info("Email notifier disabled; skipping tamper alert to %s", to_email)
+            return
+
+        thread = threading.Thread(
+            target=self._safe_send_tamper_alert_email,
+            kwargs={
+                "to_email": to_email,
+                "recipient_name": recipient_name,
+                "sector_id": sector_id,
+                "locker_id": locker_id,
+                "detected_at_ms": detected_at_ms,
+            },
+            daemon=True,
+            name="email-notifier-tamper",
+        )
+        thread.start()
+
     def _safe_send_token_email(self, **kwargs) -> None:
         try:
             self.send_token_email(**kwargs)
         except Exception:
             logger.exception("Failed to send token email")
+
+    def _safe_send_tamper_alert_email(self, **kwargs) -> None:
+        try:
+            self.send_tamper_alert_email(**kwargs)
+        except Exception:
+            logger.exception("Failed to send tamper alert email")
 
     def send_token_email(
         self,
@@ -112,6 +146,41 @@ class EmailNotifier:
             smtp.send_message(message)
 
         logger.info("Token email sent to=%s booking_id=%s purpose=%s", to_email, booking_id, purpose)
+
+    def send_tamper_alert_email(
+        self,
+        *,
+        to_email: str,
+        recipient_name: str,
+        sector_id: str,
+        locker_id: str,
+        detected_at_ms: int,
+    ) -> None:
+        detected_at = datetime.fromtimestamp(detected_at_ms / 1000.0, tz=timezone.utc).isoformat()
+        subject = f"EMERGENCY: Tamper detected on locker {locker_id}"
+        text = (
+            f"Hello {recipient_name or 'Admin'},\n\n"
+            "A tamper signal has been detected by DropLock.\n"
+            f"Sector: {sector_id}\n"
+            f"Locker: {locker_id}\n"
+            f"Detected at (UTC): {detected_at}\n\n"
+            "Please investigate immediately.\n"
+        )
+
+        message = EmailMessage()
+        message["From"] = self._from_email
+        message["To"] = to_email
+        message["Subject"] = subject
+        message.set_content(text)
+
+        with smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=15) as smtp:
+            if self._use_tls:
+                smtp.starttls()
+            if self._smtp_username:
+                smtp.login(self._smtp_username, self._smtp_password)
+            smtp.send_message(message)
+
+        logger.info("Tamper alert email sent to=%s sector=%s locker=%s", to_email, sector_id, locker_id)
 
     @staticmethod
     def _build_qr_png(token_id: str) -> bytes:

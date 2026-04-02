@@ -52,6 +52,29 @@ class EmailNotifierFallbackTests(unittest.TestCase):
         self.assertIsNotNone(fake.sent)
         self.assertEqual(len(list(fake.sent.iter_attachments())), 0)
 
+    def test_send_tamper_alert_email(self):
+        notifier = EmailNotifier(
+            smtp_host="smtp.example.com",
+            smtp_port=587,
+            smtp_username="user",
+            smtp_password="pass",
+            from_email="noreply@example.com",
+            use_tls=True,
+        )
+        fake = _FakeSMTP()
+
+        with patch("email_notifier.smtplib.SMTP", return_value=fake):
+            notifier.send_tamper_alert_email(
+                to_email="admin@example.com",
+                recipient_name="Sector Admin",
+                sector_id="S1",
+                locker_id="L3",
+                detected_at_ms=1738352110000,
+            )
+
+        self.assertIsNotNone(fake.sent)
+        self.assertIn("EMERGENCY", fake.sent["Subject"])
+
 
 if __name__ == "__main__":
     unittest.main()

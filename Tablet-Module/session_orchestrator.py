@@ -73,6 +73,7 @@ class SessionOrchestrator:
         self._active_close_sent_mono: float | None = None
 
         self._locker_door_closed: dict[str, bool] = {}
+        self._tamper_alert_active: dict[str, bool] = {}
 
     def run_forever(self) -> None:
         self.start()
@@ -191,11 +192,26 @@ class SessionOrchestrator:
 
     def _handle_background(self, event: ControllerEvent) -> None:
         if event.event_type == ControllerEventType.HEARTBEAT:
+            payload = event.payload or {}
+            heartbeat_ts = self._extract_ts_ms(payload)
             self._firebase_repo.update_locker_heartbeat(
                 sector_id=self._device_context.sector_id,
                 locker_id=event.locker_id,
-                heartbeat_at_ms=self._extract_ts_ms(event.payload),
+                heartbeat_at_ms=heartbeat_ts,
             )
+            if "tamper" in payload:
+                tamper_flag = self._coerce_bool(payload.get("tamper"))
+                self._firebase_repo.update_locker_tamper(
+                    sector_id=self._device_context.sector_id,
+                    locker_id=event.locker_id,
+                    tamper_flag=tamper_flag,
+                    tamper_at_ms=heartbeat_ts,
+                )
+                self._notify_tamper_if_needed(
+                    locker_id=event.locker_id,
+                    tamper_flag=tamper_flag,
+                    ts_ms=heartbeat_ts,
+                )
             return
         if event.event_type == ControllerEventType.TAMPER:
             self._firebase_repo.update_locker_tamper(
@@ -204,11 +220,15 @@ class SessionOrchestrator:
                 tamper_flag=True,
                 tamper_at_ms=self._extract_ts_ms(event.payload),
             )
+            self._notify_tamper_if_needed(
+                locker_id=event.locker_id,
+                tamper_flag=True,
+                ts_ms=self._extract_ts_ms(event.payload),
+            )
 
     def _on_open_ack(self, event: ControllerEvent) -> None:
         assert self._active_session is not None
 
-        self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
         self._append_booking_event("UNLOCK_GRANTED", {"requestId": self._active_session.request_id})
 
         purpose = self._purpose()
@@ -271,7 +291,19 @@ class SessionOrchestrator:
         )
 
         if not signature.captured or not signature.valid:
+            if signature.validation_reason == "SIGNATURE_CAPTURE_CANCELLED":
+                self._show_operation_cancelled_ui()
+                self._clear_active_session(show_idle=False)
+                return
             self._show_signature_failed_ui(signature.validation_reason)
+            return
+
+        try:
+            self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
+        except Exception as exc:
+            logger.exception("Failed to mark QR token used token_id=%s", self._active_session.token_id)
+            self._show_error_ui(f"Failed to finalize token usage: {exc}")
+            self._clear_active_session()
             return
 
         self._active_session = replace(
@@ -487,12 +519,108 @@ class SessionOrchestrator:
         self._show_error_ui(reason)
         self._clear_active_session()
 
-    def _clear_active_session(self) -> None:
+    def _clear_active_session(self, *, show_idle: bool = True) -> None:
         self._active_session = None
         self._active_validation = None
         self._active_open_sent_mono = None
         self._active_close_sent_mono = None
-        self._show_idle_ui()
+        if show_idle:
+            self._show_idle_ui()
+
+    def _notify_tamper_if_needed(self, *, locker_id: str, tamper_flag: bool, ts_ms: int) -> None:
+        if not tamper_flag:
+            self._tamper_alert_active[locker_id] = False
+            return
+        if self._tamper_alert_active.get(locker_id):
+            return
+        self._tamper_alert_active[locker_id] = True
+
+        if self._email_notifier is None:
+            logger.warning("Tamper detected for locker=%s but email notifier is unavailable", locker_id)
+            return
+
+        recipients = self._resolve_tamper_recipients()
+        if not recipients:
+            logger.warning(
+                "Tamper detected for locker=%s but no admin recipients were resolved",
+                locker_id,
+            )
+            return
+
+        for recipient in recipients:
+            self._email_notifier.send_tamper_alert_email_async(
+                to_email=recipient["email"],
+                recipient_name=recipient["name"],
+                sector_id=self._device_context.sector_id,
+                locker_id=locker_id,
+                detected_at_ms=ts_ms,
+            )
+
+    def _resolve_tamper_recipients(self) -> list[dict[str, str]]:
+        admin_uids: list[str] = []
+        try:
+            sector = self._firebase_repo.get_json(f"sectors/{self._device_context.sector_id}") or {}
+            admin_uid_map = (
+                sector.get("adminUids")
+                or sector.get("localAdminUids")
+                or {}
+            )
+            admin_uids = [uid for uid, enabled in admin_uid_map.items() if self._coerce_bool(enabled)]
+        except Exception:
+            logger.exception("Failed to read sector admin mapping sector_id=%s", self._device_context.sector_id)
+
+        recipients: list[dict[str, str]] = []
+        seen_emails: set[str] = set()
+        for admin_uid in admin_uids:
+            try:
+                profile = self._firebase_repo.get_profile(admin_uid) or {}
+            except Exception:
+                logger.exception("Failed reading profile for local admin uid=%s", admin_uid)
+                continue
+            email = (profile.get("email") or "").strip().lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            recipients.append({"email": email, "name": profile.get("displayName") or "Admin"})
+
+        if recipients:
+            return recipients
+
+        # Fallback: no sector admin configured/resolved, notify super-admin(s).
+        try:
+            profiles = self._firebase_repo.get_json("profiles") or {}
+        except Exception:
+            logger.exception("Failed to read profiles fallback for tamper recipients")
+            return []
+        if not isinstance(profiles, dict):
+            return []
+
+        for profile in profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            role = str(profile.get("role") or "")
+            if role != "superAdmin":
+                continue
+            email = str(profile.get("email") or "").strip().lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            recipients.append({"email": email, "name": profile.get("displayName") or "Admin"})
+        return recipients
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "y", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "n", "off", ""}:
+                return False
+        return bool(value)
 
     def _append_booking_event(self, event_type: str, data: dict[str, Any]) -> None:
         if self._active_session is None:
@@ -591,3 +719,7 @@ class SessionOrchestrator:
     def _show_close_blocked_ui(self, reasons: list[str]) -> None:
         if self._ui_controller:
             self._ui_controller.show_close_blocked(blocking_reasons=reasons)
+
+    def _show_operation_cancelled_ui(self) -> None:
+        if self._ui_controller and hasattr(self._ui_controller, "show_operation_cancelled"):
+            self._ui_controller.show_operation_cancelled()

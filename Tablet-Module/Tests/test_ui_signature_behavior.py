@@ -33,6 +33,13 @@ class UIControllerStateTests(unittest.TestCase):
 
         self.assertEqual(ui._state.title, "Request Denied")
 
+    def test_operation_cancelled_screen_title(self):
+        ui = UIController(enable_tk=False)
+        ui.show_operation_cancelled()
+
+        self.assertEqual(ui._state.name, "operation_cancelled")
+        self.assertEqual(ui._state.title, "OPERATION CANCELLED")
+
 
 if __name__ == "__main__":
     unittest.main()

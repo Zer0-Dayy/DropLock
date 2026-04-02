@@ -24,6 +24,7 @@ STATE_COLORS = {
     "error": "#dc2626",
     "signature_failed": "#f43f5e",
     "close_blocked": "#f59e0b",
+    "operation_cancelled": "#ef4444",
 }
 
 
@@ -92,6 +93,9 @@ class UIController:
 
     def show_close_blocked(self, *, blocking_reasons: list[str]) -> None:
         self._set_state("close_blocked", "Cannot close yet", ", ".join(blocking_reasons))
+
+    def show_operation_cancelled(self) -> None:
+        self._set_state("operation_cancelled", "OPERATION CANCELLED", "Session ended. Please scan again.")
 
     def _set_state(self, name: str, title: str, subtitle: str) -> None:
         self._state = UIState(name, title, subtitle, self._now_iso())

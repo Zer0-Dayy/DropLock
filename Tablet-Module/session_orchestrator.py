@@ -200,7 +200,7 @@ class SessionOrchestrator:
                 heartbeat_at_ms=heartbeat_ts,
             )
             if "tamper" in payload:
-                tamper_flag = bool(payload.get("tamper"))
+                tamper_flag = self._coerce_bool(payload.get("tamper"))
                 self._firebase_repo.update_locker_tamper(
                     sector_id=self._device_context.sector_id,
                     locker_id=event.locker_id,
@@ -539,34 +539,88 @@ class SessionOrchestrator:
             logger.warning("Tamper detected for locker=%s but email notifier is unavailable", locker_id)
             return
 
+        recipients = self._resolve_tamper_recipients()
+        if not recipients:
+            logger.warning(
+                "Tamper detected for locker=%s but no admin recipients were resolved",
+                locker_id,
+            )
+            return
+
+        for recipient in recipients:
+            self._email_notifier.send_tamper_alert_email_async(
+                to_email=recipient["email"],
+                recipient_name=recipient["name"],
+                sector_id=self._device_context.sector_id,
+                locker_id=locker_id,
+                detected_at_ms=ts_ms,
+            )
+
+    def _resolve_tamper_recipients(self) -> list[dict[str, str]]:
+        admin_uids: list[str] = []
         try:
             sector = self._firebase_repo.get_json(f"sectors/{self._device_context.sector_id}") or {}
+            admin_uid_map = (
+                sector.get("adminUids")
+                or sector.get("localAdminUids")
+                or {}
+            )
+            admin_uids = [uid for uid, enabled in admin_uid_map.items() if self._coerce_bool(enabled)]
         except Exception:
-            logger.exception("Failed to read sector for tamper alert sector_id=%s", self._device_context.sector_id)
-            return
+            logger.exception("Failed to read sector admin mapping sector_id=%s", self._device_context.sector_id)
 
-        admin_uids = [
-            uid for uid, enabled in (sector.get("localAdminUids") or {}).items() if enabled
-        ]
-        if not admin_uids:
-            logger.warning("Tamper detected for locker=%s but no local admins configured", locker_id)
-            return
-
+        recipients: list[dict[str, str]] = []
+        seen_emails: set[str] = set()
         for admin_uid in admin_uids:
             try:
                 profile = self._firebase_repo.get_profile(admin_uid) or {}
-                email = (profile.get("email") or "").strip()
-                if not email:
-                    continue
-                self._email_notifier.send_tamper_alert_email_async(
-                    to_email=email,
-                    recipient_name=profile.get("displayName") or "Admin",
-                    sector_id=self._device_context.sector_id,
-                    locker_id=locker_id,
-                    detected_at_ms=ts_ms,
-                )
             except Exception:
-                logger.exception("Failed to notify admin_uid=%s for tamper alert", admin_uid)
+                logger.exception("Failed reading profile for local admin uid=%s", admin_uid)
+                continue
+            email = (profile.get("email") or "").strip().lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            recipients.append({"email": email, "name": profile.get("displayName") or "Admin"})
+
+        if recipients:
+            return recipients
+
+        # Fallback: no sector admin configured/resolved, notify super-admin(s).
+        try:
+            profiles = self._firebase_repo.get_json("profiles") or {}
+        except Exception:
+            logger.exception("Failed to read profiles fallback for tamper recipients")
+            return []
+        if not isinstance(profiles, dict):
+            return []
+
+        for profile in profiles.values():
+            if not isinstance(profile, dict):
+                continue
+            role = str(profile.get("role") or "")
+            if role != "superAdmin":
+                continue
+            email = str(profile.get("email") or "").strip().lower()
+            if not email or email in seen_emails:
+                continue
+            seen_emails.add(email)
+            recipients.append({"email": email, "name": profile.get("displayName") or "Admin"})
+        return recipients
+
+    @staticmethod
+    def _coerce_bool(value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"1", "true", "yes", "y", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "n", "off", ""}:
+                return False
+        return bool(value)
 
     def _append_booking_event(self, event_type: str, data: dict[str, Any]) -> None:
         if self._active_session is None:

@@ -40,7 +40,22 @@ class FakeFirebaseRepo:
 
     def get_json(self, path):
         if path == "sectors/S1":
-            return {"localAdminUids": {"admin-1": True}}
+            return {"adminUids": {"admin-1": True}}
+        if path == "profiles":
+            return {
+                "admin-1": {
+                    "role": "admin",
+                    "sectorId": "S1",
+                    "email": "user@example.com",
+                    "displayName": "User One",
+                },
+                "super-1": {
+                    "role": "superAdmin",
+                    "sectorId": None,
+                    "email": "super@example.com",
+                    "displayName": "Super Admin",
+                }
+            }
         return {}
 
 
@@ -246,6 +261,58 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertEqual(len(repo.tamper_updates), 2)
         self.assertEqual(len(sent), 1)
         self.assertEqual(sent[0]["to_email"], "user@example.com")
+
+    def test_tamper_email_falls_back_to_superadmin_when_sector_mapping_missing(self):
+        repo = FakeFirebaseRepo()
+        sent = []
+
+        def _get_json(path):
+            if path == "sectors/S1":
+                return {}
+            if path == "profiles":
+                return {
+                    "admin-2": {
+                        "role": "admin",
+                        "sectorId": "S1",
+                        "email": "admin2@example.com",
+                        "displayName": "Admin Two",
+                    },
+                    "super-1": {
+                        "role": "superAdmin",
+                        "sectorId": None,
+                        "email": "super@example.com",
+                        "displayName": "Super Admin",
+                    }
+                }
+            return {}
+
+        repo.get_json = _get_json
+
+        class FakeEmailNotifier:
+            def send_tamper_alert_email_async(self, **kwargs):
+                sent.append(kwargs)
+
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            email_notifier=FakeEmailNotifier(),
+        )
+
+        orchestrator._handle_background(
+            ControllerEvent(
+                event_type=ControllerEventType.HEARTBEAT,
+                locker_id="Locker 1",
+                payload={"ts": 1000, "tamper": "true"},
+            )
+        )
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(sent[0]["to_email"], "super@example.com")
 
 
 if __name__ == "__main__":

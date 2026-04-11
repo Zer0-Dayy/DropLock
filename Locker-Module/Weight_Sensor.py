@@ -13,19 +13,54 @@ class WeightSensor:
         self.data_pin = data_pin
         self.clock_pin = clock_pin
         self.reference_unit = reference_unit
+        self.zero_offset = 0.0
 
         GPIO.setwarnings(False)
         self.hx = HX711(dout_pin=self.data_pin, pd_sck_pin=self.clock_pin)
         self.hx.reset()
         logger.info("Weight sensor initialized (DT=%s, SCK=%s)", self.data_pin, self.clock_pin)
 
+    def _read_filtered_raw(self, samples=12, trim_ratio=0.2):
+        raw = self.hx.get_raw_data(times=samples)
+        if not raw:
+            return None
+
+        ordered = sorted(raw)
+        trim_count = int(len(ordered) * trim_ratio)
+
+        if trim_count * 2 >= len(ordered):
+            trimmed = ordered
+        else:
+            trimmed = ordered[trim_count : len(ordered) - trim_count]
+
+        if not trimmed:
+            return None
+        return sum(trimmed) / len(trimmed)
+
+    def calibrate(self, samples=25, warmup_reads=5):
+        try:
+            for _ in range(warmup_reads):
+                self.hx.get_raw_data(times=3)
+            reading = self._read_filtered_raw(samples=samples)
+            if reading is None:
+                logger.warning("Weight calibration failed: no raw samples")
+                return False
+
+            self.zero_offset = reading
+            logger.info("Weight sensor calibrated. zero_offset=%.2f", self.zero_offset)
+            return True
+        except Exception as exc:
+            logger.exception("Weight calibration failed: %s", exc)
+            return False
+
     def get_weight(self):
         try:
-            raw = self.hx.get_raw_data(times=5)
-            if not raw:
+            raw_mean = self._read_filtered_raw(samples=12)
+            if raw_mean is None:
                 return 0
-            raw_mean = sum(raw) / len(raw)
-            return max(0, int(raw_mean / self.reference_unit))
+
+            net_raw = raw_mean - self.zero_offset
+            return max(0, int(net_raw / self.reference_unit))
         except Exception as exc:
             logger.exception("Weight read failed: %s", exc)
             return 0

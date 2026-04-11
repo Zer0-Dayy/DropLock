@@ -273,6 +273,8 @@ def main() -> int:
     GPIO.setmode(GPIO.BCM)
 
     locker_manager = LockerManager.from_configs(build_default_locker_configs())
+    calibration_status = locker_manager.calibrate_weight_sensors()
+    logger.info("Weight sensor calibration status: %s", calibration_status)
     controller = DropLockController(MqttConfig(), locker_manager)
     controller.run_forever()
     return 0

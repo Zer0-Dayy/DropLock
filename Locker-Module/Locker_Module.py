@@ -56,6 +56,10 @@ class Locker:
         self.expected_closed = True
         logger.info("Locker %s initialized", self.locker_id)
 
+    def calibrate_weight_sensor(self) -> bool:
+        logger.info("Calibrating weight sensor for locker %s", self.locker_id)
+        return self.weight_sensor.calibrate()
+
     def unlock(self, duration=2):
         self.state = LockerState.OPENING
         self.expected_closed = False
@@ -121,6 +125,12 @@ class LockerManager:
 
     def get_locker(self, locker_id: str) -> Optional[Locker]:
         return self.lockers.get(locker_id)
+
+    def calibrate_weight_sensors(self):
+        calibration_status = {}
+        for locker_id, locker in self.lockers.items():
+            calibration_status[locker_id] = locker.calibrate_weight_sensor()
+        return calibration_status
 
     def heartbeat_snapshot(self):
         status = {}

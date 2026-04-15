@@ -92,7 +92,6 @@ class SessionOrchestrator:
         self._ensure_scanner_started()
         self._ensure_mqtt_started_with_retry()
         self._running = True
-        self._show_idle_ui()
 
     def stop(self) -> None:
         self._running = False
@@ -656,6 +655,7 @@ class SessionOrchestrator:
         while True:
             try:
                 self._ensure_mqtt_started()
+                self._show_idle_ui()
                 return
             except Exception:
                 logger.warning(

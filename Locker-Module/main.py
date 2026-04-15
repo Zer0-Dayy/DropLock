@@ -300,6 +300,7 @@ def main() -> int:
 
     if not all(calibration_status.values()):
         logger.error("Manual calibration failed for at least one locker; aborting startup.")
+        GPIO.cleanup()
         return 1
 
     controller = DropLockController(MqttConfig(), locker_manager)

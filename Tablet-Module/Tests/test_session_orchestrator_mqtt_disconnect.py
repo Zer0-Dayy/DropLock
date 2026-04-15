@@ -194,9 +194,13 @@ class _UIConnect(_UI):
     def __init__(self):
         super().__init__()
         self.establishing_count = 0
+        self.idle_count = 0
 
     def show_establishing_connection(self):
         self.establishing_count += 1
+
+    def show_idle(self):
+        self.idle_count += 1
 
 
 class SessionOrchestratorMQTTRetryTests(unittest.TestCase):
@@ -220,6 +224,7 @@ class SessionOrchestratorMQTTRetryTests(unittest.TestCase):
 
         self.assertEqual(mqtt.starts, 2)
         self.assertEqual(ui.establishing_count, 1)
+        self.assertEqual(ui.idle_count, 1)
 
 
 if __name__ == "__main__":

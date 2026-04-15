@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import ssl
+import threading
 import time
 from dataclasses import dataclass
 from typing import Dict, Optional
@@ -45,6 +46,8 @@ class DropLockController:
         self.lockers = locker_manager
         self.client = self._build_client()
         self.last_heartbeat = 0.0
+        self._weight_streams = {}
+        self._weight_stream_lock = threading.Lock()
 
     def _cmd_topic(self, locker_id: str) -> str:
         return f"droplock/{self.cfg.sector_id}/{locker_id}/cmd"
@@ -128,20 +131,7 @@ class DropLockController:
             },
         )
 
-        measured_weight = locker.get_weight_grams()
-        payload = {
-            "schemaVersion": 1,
-            "type": "WEIGHT_MEASURED",
-            "requestId": request_id,
-            "ts": now_ms(),
-            "sectorId": self.cfg.sector_id,
-            "lockerId": locker_id,
-            "weightGrams": measured_weight,
-            "measuredWeightGrams": measured_weight,
-        }
-        self.publish_event(locker_id, payload)
-        time.sleep(1)
-        self.publish_event(locker_id, payload)
+        self._start_weight_stream(locker_id, request_id)
 
     def handle_close(self, locker_id: str, cmd: dict):
         locker = self.lockers.get_locker(locker_id)
@@ -150,6 +140,7 @@ class DropLockController:
             logger.warning("CLOSE for unknown locker_id=%s", locker_id)
             return
 
+        self._stop_weight_stream(locker_id)
         locker.begin_close_wait()
         if locker.verify_closed(close_buffer_seconds=5):
             self.publish_event(
@@ -228,6 +219,58 @@ class DropLockController:
         elif cmd_type == "CLOSE":
             self.handle_close(locker_id, cmd)
 
+    def _start_weight_stream(self, locker_id: str, request_id: str):
+        self._stop_weight_stream(locker_id)
+        stop_event = threading.Event()
+        thread = threading.Thread(
+            target=self._weight_stream_loop,
+            args=(locker_id, request_id, stop_event),
+            daemon=True,
+        )
+        with self._weight_stream_lock:
+            self._weight_streams[locker_id] = {
+                "thread": thread,
+                "stop_event": stop_event,
+            }
+        thread.start()
+
+    def _stop_weight_stream(self, locker_id: str):
+        with self._weight_stream_lock:
+            stream = self._weight_streams.pop(locker_id, None)
+        if not stream:
+            return
+
+        stream["stop_event"].set()
+        stream["thread"].join(timeout=2.0)
+
+    def _weight_stream_loop(self, locker_id: str, request_id: str, stop_event: threading.Event):
+        while not stop_event.is_set():
+            locker = self.lockers.get_locker(locker_id)
+            if locker is None:
+                return
+
+            measured_weight = locker.get_weight_grams()
+            logger.info(
+                "Weight debug locker=%s request_id=%s measured_weight_grams=%s",
+                locker_id,
+                request_id,
+                measured_weight,
+            )
+            self.publish_event(
+                locker_id,
+                {
+                    "schemaVersion": 1,
+                    "type": "WEIGHT_MEASURED",
+                    "requestId": request_id,
+                    "ts": now_ms(),
+                    "sectorId": self.cfg.sector_id,
+                    "lockerId": locker_id,
+                    "weightGrams": measured_weight,
+                    "measuredWeightGrams": measured_weight,
+                },
+            )
+            stop_event.wait(1.0)
+
     def run_forever(self):
         self.client.connect(self.cfg.broker_host, self.cfg.broker_port, keepalive=60)
         self.client.loop_start()
@@ -241,6 +284,8 @@ class DropLockController:
         except KeyboardInterrupt:
             logger.info("Stopping DropLock locker controller")
         finally:
+            for locker_id in list(self.lockers.lockers.keys()):
+                self._stop_weight_stream(locker_id)
             self.client.loop_stop()
             self.client.disconnect()
             GPIO.cleanup()

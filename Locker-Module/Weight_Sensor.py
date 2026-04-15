@@ -1,4 +1,5 @@
 import logging
+import statistics
 
 import RPi.GPIO as GPIO
 from hx711 import HX711
@@ -37,10 +38,17 @@ class WeightSensor:
             return None
         return sum(trimmed) / len(trimmed)
 
-    def _read_stable_raw(self, samples=25, warmup_reads=5):
+    def _read_stable_raw(self, samples=25, warmup_reads=5, windows=1, trim_ratio=0.2):
         for _ in range(warmup_reads):
             self.hx.get_raw_data(times=3)
-        return self._read_filtered_raw(samples=samples)
+        window_means = []
+        for _ in range(windows):
+            reading = self._read_filtered_raw(samples=samples, trim_ratio=trim_ratio)
+            if reading is not None:
+                window_means.append(reading)
+        if not window_means:
+            return None
+        return statistics.median(window_means)
 
     def calibrate(self, samples=25, warmup_reads=5):
         try:
@@ -114,12 +122,19 @@ class WeightSensor:
 
     def get_weight(self):
         try:
-            raw_mean = self._read_filtered_raw(samples=12)
-            if raw_mean is None:
+            raw_median = self._read_stable_raw(
+                samples=15,
+                warmup_reads=2,
+                windows=7,
+                trim_ratio=0.25,
+            )
+            if raw_median is None:
                 return 0
 
-            net_raw = raw_mean - self.zero_offset
-            return max(0, int(net_raw / self.reference_unit))
+            net_raw = raw_median - self.zero_offset
+            if abs(net_raw) < self.reference_unit * 0.5:
+                return 0
+            return max(0, int(round(net_raw / self.reference_unit)))
         except Exception as exc:
             logger.exception("Weight read failed: %s", exc)
             return 0

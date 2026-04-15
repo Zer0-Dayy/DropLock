@@ -227,5 +227,44 @@ class SessionOrchestratorMQTTRetryTests(unittest.TestCase):
         self.assertEqual(ui.idle_count, 1)
 
 
+class _MQTTAlwaysFail:
+    def __init__(self):
+        self.starts = 0
+
+    def is_running(self):
+        return False
+
+    def start(self):
+        self.starts += 1
+        raise TimeoutError("timed out")
+
+
+class SessionOrchestratorMQTTRetryLimitTests(unittest.TestCase):
+    def test_start_stops_retrying_after_max_attempts_and_surfaces_error(self):
+        ui = _UIConnect()
+        mqtt = _MQTTAlwaysFail()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(start=lambda: None),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=SimpleNamespace(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=ui,
+            mqtt_start_retry_delay_s=0.01,
+            mqtt_start_max_attempts=3,
+        )
+
+        with patch("session_orchestrator.time.sleep", return_value=None):
+            with self.assertRaises(RuntimeError):
+                orchestrator.start()
+
+        self.assertEqual(mqtt.starts, 3)
+        self.assertEqual(ui.establishing_count, 2)
+        self.assertTrue(ui.errors)
+
+
 if __name__ == "__main__":
     unittest.main()

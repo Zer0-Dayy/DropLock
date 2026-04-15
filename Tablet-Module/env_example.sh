@@ -15,6 +15,9 @@ export MQTT_TLS_CA_CERT_PATH=""
 export MQTT_TLS_CLIENT_CERT_PATH=""
 export MQTT_TLS_CLIENT_KEY_PATH=""
 export MQTT_TLS_INSECURE_SKIP_VERIFY="false"
+# MQTT startup retries: 0 means retry forever; set a positive number to fail fast.
+export MQTT_START_RETRY_DELAY_SEC="2.0"
+export MQTT_START_MAX_ATTEMPTS="0"
 
 export SIGNATURE_BASE_PATH="/home/pi/droplock/signatures"
 

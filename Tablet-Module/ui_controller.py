@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 STATE_COLORS = {
     "idle": "#0ea5e9",
+    "establishing_connection": "#0ea5e9",
     "processing_request": "#3b82f6",
     "validating": "#3b82f6",
     "unlocking": "#22c55e",
@@ -53,6 +54,13 @@ class UIController:
 
     def show_idle(self) -> None:
         self._set_state("idle", "Ready", "Please scan a QR code")
+
+    def show_establishing_connection(self) -> None:
+        self._set_state(
+            "establishing_connection",
+            "Establishing Connection With Locker Module",
+            "Please wait while we connect to the controller",
+        )
 
     def show_processing_request(self, *, token_id: str) -> None:
         self._set_state("processing_request", "Processing Request", f"Checking token {token_id}")

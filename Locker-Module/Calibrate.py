@@ -1,25 +1,51 @@
 import RPi.GPIO as GPIO
-from hx711 import HX711
 
-GPIO.setwarnings(False)
-GPIO.setmode(GPIO.BCM)
+from Weight_Sensor import WeightSensor
 
-hx = HX711(dout_pin=6, pd_sck_pin=5)
-hx.reset()
 
-print("Getting empty reading...")
-empty = hx.get_raw_data(times=5)
-empty_mean = sum(empty) / len(empty)
-print("Empty mean:", empty_mean)
+def _read_known_weight(index):
+    while True:
+        value = input(f"Enter known weight for object #{index} in grams: ").strip()
+        try:
+            grams = float(value)
+        except ValueError:
+            print("Invalid number, please try again.")
+            continue
 
-input("Place your known weight and press Enter...")
-raw = hx.get_raw_data(times=5)
-raw_mean = sum(raw) / len(raw)
-print("Weight mean:", raw_mean)
+        if grams <= 0:
+            print("Weight must be greater than 0.")
+            continue
+        return grams
 
-diff = raw_mean - empty_mean
-known_grams = float(input("How many grams was that? "))
-factor = diff / known_grams
-print(f"\nYour reference unit is: {factor:.2f}")
 
-GPIO.cleanup()
+def main():
+    GPIO.setwarnings(False)
+    GPIO.setmode(GPIO.BCM)
+
+    sensor = WeightSensor(data_pin=6, clock_pin=5)
+
+    print("\nManual initial calibration (3 objects)")
+    print("Use three known objects and place only one object on the scale per step.")
+    print("Remove all weight from the scale before starting.\n")
+
+    known_weights = [_read_known_weight(1), _read_known_weight(2), _read_known_weight(3)]
+
+    def _prompt_before_read(index, known_weight):
+        input(
+            f"\nPlace object #{index} ({known_weight}g) on the scale, wait for it to settle, then press Enter..."
+        )
+
+    ok = sensor.calibrate_manual(known_weights, samples=25, warmup_reads=5, before_read=_prompt_before_read)
+    if not ok:
+        print("\nCalibration failed. Please retry with stable objects and known weights.")
+    else:
+        print("\nCalibration complete.")
+        print(f"zero_offset = {sensor.zero_offset:.2f}")
+        print(f"reference_unit = {sensor.reference_unit:.4f} raw-units/gram")
+        print("\nUse these values in your locker config for consistent readings.")
+
+    GPIO.cleanup()
+
+
+if __name__ == "__main__":
+    main()

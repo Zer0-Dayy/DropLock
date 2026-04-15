@@ -37,11 +37,14 @@ class WeightSensor:
             return None
         return sum(trimmed) / len(trimmed)
 
+    def _read_stable_raw(self, samples=25, warmup_reads=5):
+        for _ in range(warmup_reads):
+            self.hx.get_raw_data(times=3)
+        return self._read_filtered_raw(samples=samples)
+
     def calibrate(self, samples=25, warmup_reads=5):
         try:
-            for _ in range(warmup_reads):
-                self.hx.get_raw_data(times=3)
-            reading = self._read_filtered_raw(samples=samples)
+            reading = self._read_stable_raw(samples=samples, warmup_reads=warmup_reads)
             if reading is None:
                 logger.warning("Weight calibration failed: no raw samples")
                 return False
@@ -51,6 +54,62 @@ class WeightSensor:
             return True
         except Exception as exc:
             logger.exception("Weight calibration failed: %s", exc)
+            return False
+
+    def calibrate_manual(self, known_weights_grams, samples=25, warmup_reads=5, before_read=None):
+        """
+        Calibrate using known reference objects.
+        `known_weights_grams` must contain at least 3 positive values.
+        """
+        try:
+            if len(known_weights_grams) < 3:
+                logger.warning("Manual calibration requires at least 3 known objects")
+                return False
+
+            if any(weight <= 0 for weight in known_weights_grams):
+                logger.warning("Manual calibration weights must be positive")
+                return False
+
+            raw_points = []
+            for idx, known_weight in enumerate(known_weights_grams, start=1):
+                if before_read:
+                    before_read(idx, known_weight)
+                reading = self._read_stable_raw(samples=samples, warmup_reads=warmup_reads)
+                if reading is None:
+                    logger.warning("Manual calibration failed for object #%s: no samples", idx)
+                    return False
+                raw_points.append((float(known_weight), float(reading)))
+
+            # Fit raw = a + b * grams via least squares.
+            count = len(raw_points)
+            sum_x = sum(weight for weight, _ in raw_points)
+            sum_y = sum(raw for _, raw in raw_points)
+            sum_xx = sum(weight * weight for weight, _ in raw_points)
+            sum_xy = sum(weight * raw for weight, raw in raw_points)
+
+            denominator = (count * sum_xx) - (sum_x * sum_x)
+            if denominator == 0:
+                logger.warning("Manual calibration failed: degenerate reference weights")
+                return False
+
+            slope = ((count * sum_xy) - (sum_x * sum_y)) / denominator
+            intercept = (sum_y - (slope * sum_x)) / count
+
+            if slope <= 0:
+                logger.warning("Manual calibration failed: non-positive slope %.4f", slope)
+                return False
+
+            self.reference_unit = slope
+            self.zero_offset = intercept
+            logger.info(
+                "Manual calibration complete. reference_unit=%.4f zero_offset=%.2f points=%s",
+                self.reference_unit,
+                self.zero_offset,
+                raw_points,
+            )
+            return True
+        except Exception as exc:
+            logger.exception("Manual calibration failed: %s", exc)
             return False
 
     def get_weight(self):

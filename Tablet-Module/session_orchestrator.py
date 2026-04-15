@@ -90,7 +90,7 @@ class SessionOrchestrator:
 
     def start(self) -> None:
         self._ensure_scanner_started()
-        self._ensure_mqtt_started()
+        self._ensure_mqtt_started_with_retry()
         self._running = True
         self._show_idle_ui()
 
@@ -652,6 +652,19 @@ class SessionOrchestrator:
             return
         self._mqtt_client.start()
 
+    def _ensure_mqtt_started_with_retry(self) -> None:
+        while True:
+            try:
+                self._ensure_mqtt_started()
+                return
+            except Exception:
+                logger.warning(
+                    "MQTT not ready yet; retrying in 2s.",
+                    exc_info=True,
+                )
+                self._show_establishing_connection_ui()
+                time.sleep(2.0)
+
     def _log_event(self, name: str, **data: Any) -> None:
         if self._event_logger is not None:
             self._event_logger.log(name, **data)
@@ -659,6 +672,10 @@ class SessionOrchestrator:
     def _show_idle_ui(self) -> None:
         if self._ui_controller:
             self._ui_controller.show_idle()
+
+    def _show_establishing_connection_ui(self) -> None:
+        if self._ui_controller and hasattr(self._ui_controller, "show_establishing_connection"):
+            self._ui_controller.show_establishing_connection()
 
     def _show_processing_request_ui(self, token_id: str) -> None:
         if not self._ui_controller:

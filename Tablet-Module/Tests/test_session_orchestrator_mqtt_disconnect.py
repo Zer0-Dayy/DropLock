@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from close_gates import CloseGates
 from datetime import datetime
@@ -174,6 +175,51 @@ class SessionOrchestratorClosePublishFailureTests(unittest.TestCase):
         self.assertIsNotNone(orchestrator._active_session)
         self.assertEqual(orchestrator._active_session.phase, SessionPhase.READY_TO_CLOSE)
         self.assertTrue(ui.errors)
+
+
+class _MQTTRetryOnce:
+    def __init__(self):
+        self.starts = 0
+
+    def is_running(self):
+        return False
+
+    def start(self):
+        self.starts += 1
+        if self.starts == 1:
+            raise RuntimeError("timeout")
+
+
+class _UIConnect(_UI):
+    def __init__(self):
+        super().__init__()
+        self.establishing_count = 0
+
+    def show_establishing_connection(self):
+        self.establishing_count += 1
+
+
+class SessionOrchestratorMQTTRetryTests(unittest.TestCase):
+    def test_start_retries_mqtt_until_connected(self):
+        ui = _UIConnect()
+        mqtt = _MQTTRetryOnce()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(start=lambda: None),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=SimpleNamespace(),
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=ui,
+        )
+
+        with patch("session_orchestrator.time.sleep", return_value=None):
+            orchestrator.start()
+
+        self.assertEqual(mqtt.starts, 2)
+        self.assertEqual(ui.establishing_count, 1)
 
 
 if __name__ == "__main__":

@@ -40,6 +40,13 @@ class UIControllerStateTests(unittest.TestCase):
         self.assertEqual(ui._state.name, "operation_cancelled")
         self.assertEqual(ui._state.title, "OPERATION CANCELLED")
 
+    def test_establishing_connection_screen_title(self):
+        ui = UIController(enable_tk=False)
+        ui.show_establishing_connection()
+
+        self.assertEqual(ui._state.name, "establishing_connection")
+        self.assertEqual(ui._state.title, "Establishing Connection With Locker Module")
+
 
 if __name__ == "__main__":
     unittest.main()

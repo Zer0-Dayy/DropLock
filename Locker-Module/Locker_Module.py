@@ -60,6 +60,21 @@ class Locker:
         logger.info("Calibrating weight sensor for locker %s", self.locker_id)
         return self.weight_sensor.calibrate()
 
+    def calibrate_weight_sensor_manual(
+        self,
+        known_weights_grams,
+        samples=25,
+        warmup_reads=5,
+        before_read=None,
+    ) -> bool:
+        logger.info("Running manual weight calibration for locker %s", self.locker_id)
+        return self.weight_sensor.calibrate_manual(
+            known_weights_grams,
+            samples=samples,
+            warmup_reads=warmup_reads,
+            before_read=before_read,
+        )
+
     def unlock(self, duration=2):
         self.state = LockerState.OPENING
         self.expected_closed = False
@@ -130,6 +145,18 @@ class LockerManager:
         calibration_status = {}
         for locker_id, locker in self.lockers.items():
             calibration_status[locker_id] = locker.calibrate_weight_sensor()
+        return calibration_status
+
+    def calibrate_weight_sensors_manual(self, known_weights_by_locker, before_read=None):
+        calibration_status = {}
+        for locker_id, locker in self.lockers.items():
+            known_weights = known_weights_by_locker.get(locker_id, [])
+            calibration_status[locker_id] = locker.calibrate_weight_sensor_manual(
+                known_weights,
+                samples=25,
+                warmup_reads=5,
+                before_read=before_read,
+            )
         return calibration_status
 
     def heartbeat_snapshot(self):

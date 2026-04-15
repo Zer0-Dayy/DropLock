@@ -94,20 +94,6 @@ class DropLockController:
                 },
             )
 
-    def emit_tamper_if_any(self):
-        for locker_id, locker in self.lockers.lockers.items():
-            if locker.evaluate_tamper():
-                self.publish_event(
-                    locker_id,
-                    {
-                        "schemaVersion": 1,
-                        "type": "TAMPER",
-                        "ts": now_ms(),
-                        "sectorId": self.cfg.sector_id,
-                        "lockerId": locker_id,
-                    },
-                )
-
     def handle_open(self, locker_id: str, cmd: dict):
         locker = self.lockers.get_locker(locker_id)
         request_id = cmd.get("requestId", "")
@@ -251,7 +237,6 @@ class DropLockController:
                 if now - self.last_heartbeat >= self.cfg.heartbeat_seconds:
                     self.emit_heartbeat()
                     self.last_heartbeat = now
-                self.emit_tamper_if_any()
                 time.sleep(0.5)
         except KeyboardInterrupt:
             logger.info("Stopping DropLock locker controller")
@@ -268,13 +253,55 @@ def build_default_locker_configs():
     ]
 
 
+def _read_known_weight(locker_id: str, index: int) -> float:
+    while True:
+        value = input(f"Locker {locker_id} - enter known weight for object #{index} in grams: ").strip()
+        try:
+            grams = float(value)
+        except ValueError:
+            print("Invalid number, please try again.")
+            continue
+
+        if grams <= 0:
+            print("Weight must be greater than 0.")
+            continue
+        return grams
+
+
+def _run_manual_weight_calibration(locker_manager: LockerManager) -> Dict[str, bool]:
+    print("\nManual initial calibration (3 objects per locker)")
+    print("Use three known objects and place only one object on the scale per step.")
+    print("Remove all weight from each scale before starting.\n")
+
+    known_weights_by_locker: Dict[str, list[float]] = {}
+    for locker_id in locker_manager.lockers.keys():
+        print(f"Preparing manual calibration for {locker_id}.")
+        known_weights_by_locker[locker_id] = [_read_known_weight(locker_id, i) for i in (1, 2, 3)]
+
+    def _prompt_before_read(index, known_weight):
+        input(
+            f"\nPlace object #{index} ({known_weight}g) on the scale, wait for it to settle, then press Enter..."
+        )
+
+    calibration_status = locker_manager.calibrate_weight_sensors_manual(
+        known_weights_by_locker,
+        before_read=_prompt_before_read,
+    )
+    return calibration_status
+
+
 def main() -> int:
     GPIO.setwarnings(False)
     GPIO.setmode(GPIO.BCM)
 
     locker_manager = LockerManager.from_configs(build_default_locker_configs())
-    calibration_status = locker_manager.calibrate_weight_sensors()
-    logger.info("Weight sensor calibration status: %s", calibration_status)
+    calibration_status = _run_manual_weight_calibration(locker_manager)
+    logger.info("Manual weight sensor calibration status: %s", calibration_status)
+
+    if not all(calibration_status.values()):
+        logger.error("Manual calibration failed for at least one locker; aborting startup.")
+        return 1
+
     controller = DropLockController(MqttConfig(), locker_manager)
     controller.run_forever()
     return 0

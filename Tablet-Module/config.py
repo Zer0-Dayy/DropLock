@@ -38,6 +38,11 @@ MQTT_TLS_CLIENT_KEY_PATH = optional_env("MQTT_TLS_CLIENT_KEY_PATH", "") or ""
 MQTT_TLS_INSECURE_SKIP_VERIFY = (
     (optional_env("MQTT_TLS_INSECURE_SKIP_VERIFY", "false") or "false").lower() == "true"
 )
+MQTT_START_RETRY_DELAY_SEC = float(optional_env("MQTT_START_RETRY_DELAY_SEC", "2.0") or "2.0")
+MQTT_START_MAX_ATTEMPTS_RAW = optional_env("MQTT_START_MAX_ATTEMPTS", "0") or "0"
+MQTT_START_MAX_ATTEMPTS = int(MQTT_START_MAX_ATTEMPTS_RAW)
+if MQTT_START_MAX_ATTEMPTS <= 0:
+    MQTT_START_MAX_ATTEMPTS = None
 
 # Topic contracts
 MQTT_TOPIC_CMD = "droplock/{sector}/{locker}/cmd"

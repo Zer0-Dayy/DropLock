@@ -47,6 +47,8 @@ class SessionOrchestrator:
         mqtt_poll_timeout_s: float = 0.05,
         open_ack_timeout_s: float = 20.0,
         close_ack_timeout_s: float = 20.0,
+        mqtt_start_retry_delay_s: float = 2.0,
+        mqtt_start_max_attempts: int | None = None,
     ) -> None:
         self._device_context = device_context
         self._scanner_input = scanner_input
@@ -65,6 +67,8 @@ class SessionOrchestrator:
         self._mqtt_poll_timeout_s = mqtt_poll_timeout_s
         self._open_ack_timeout_s = open_ack_timeout_s
         self._close_ack_timeout_s = close_ack_timeout_s
+        self._mqtt_start_retry_delay_s = mqtt_start_retry_delay_s
+        self._mqtt_start_max_attempts = mqtt_start_max_attempts
 
         self._running = False
         self._active_session: LockerSession | None = None
@@ -652,18 +656,37 @@ class SessionOrchestrator:
         self._mqtt_client.start()
 
     def _ensure_mqtt_started_with_retry(self) -> None:
+        attempts = 0
         while True:
             try:
                 self._ensure_mqtt_started()
                 self._show_idle_ui()
                 return
-            except Exception:
+            except Exception as exc:
+                attempts += 1
+                max_attempts = self._mqtt_start_max_attempts
+                if max_attempts is not None and max_attempts > 0 and attempts >= max_attempts:
+                    logger.error(
+                        "MQTT failed after %s attempts; giving up startup.",
+                        attempts,
+                        exc_info=True,
+                    )
+                    self._show_error_ui(
+                        "Controller offline. Please check locker module network/power and restart this tablet."
+                    )
+                    raise RuntimeError(
+                        f"MQTT startup failed after {attempts} attempts"
+                    ) from exc
+
                 logger.warning(
-                    "MQTT not ready yet; retrying in 2s.",
+                    "MQTT not ready yet (attempt %s%s); retrying in %.1fs.",
+                    attempts,
+                    f"/{max_attempts}" if max_attempts is not None and max_attempts > 0 else "",
+                    self._mqtt_start_retry_delay_s,
                     exc_info=True,
                 )
                 self._show_establishing_connection_ui()
-                time.sleep(2.0)
+                time.sleep(self._mqtt_start_retry_delay_s)
 
     def _log_event(self, name: str, **data: Any) -> None:
         if self._event_logger is not None:

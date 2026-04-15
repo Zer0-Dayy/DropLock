@@ -22,6 +22,8 @@ from config import (
     MQTT_TLS_ENABLED,
     MQTT_TLS_INSECURE_SKIP_VERIFY,
     MQTT_USERNAME,
+    MQTT_START_RETRY_DELAY_SEC,
+    MQTT_START_MAX_ATTEMPTS,
     OPEN_ACK_TIMEOUT_SEC,
     PICKUP_TOKEN_TTL_SEC,
     SIGNATURE_BASE_PATH,
@@ -141,6 +143,8 @@ def main() -> int:
             email_notifier=email_notifier,
             open_ack_timeout_s=float(OPEN_ACK_TIMEOUT_SEC),
             close_ack_timeout_s=float(CLOSE_ACK_TIMEOUT_SEC),
+            mqtt_start_retry_delay_s=MQTT_START_RETRY_DELAY_SEC,
+            mqtt_start_max_attempts=MQTT_START_MAX_ATTEMPTS,
         )
         orchestrator.run_forever()
         return 0

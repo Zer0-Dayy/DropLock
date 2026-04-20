@@ -47,6 +47,7 @@ class UIController:
 
         self._ui_queue: mp.Queue[dict] | None = None
         self._scan_queue: mp.Queue[str] | None = None
+        self._cancel_queue: mp.Queue[bool] | None = None
         self._ui_process: mp.Process | None = None
 
         if self._enable_tk:
@@ -116,9 +117,10 @@ class UIController:
 
         self._ui_queue = mp.Queue(maxsize=100)
         self._scan_queue = mp.Queue(maxsize=200)
+        self._cancel_queue = mp.Queue(maxsize=20)
         self._ui_process = mp.Process(
             target=_run_ui_process,
-            args=(self._ui_queue, self._scan_queue, self._fullscreen),
+            args=(self._ui_queue, self._scan_queue, self._cancel_queue, self._fullscreen),
             daemon=True,
             name="droplock-ui",
         )
@@ -132,6 +134,14 @@ class UIController:
             return self._scan_queue.get_nowait()
         except Empty:
             return None
+
+    def get_cancel_nowait(self) -> bool:
+        if self._cancel_queue is None:
+            return False
+        try:
+            return bool(self._cancel_queue.get_nowait())
+        except Empty:
+            return False
 
     def _push_state(self, state: UIState) -> None:
         if not self._enable_tk or self._ui_queue is None:
@@ -153,7 +163,7 @@ class UIController:
         return datetime.now(timezone.utc).isoformat()
 
 
-def _run_ui_process(ui_queue: mp.Queue, scan_queue: mp.Queue, fullscreen: bool) -> None:
+def _run_ui_process(ui_queue: mp.Queue, scan_queue: mp.Queue, cancel_queue: mp.Queue, fullscreen: bool) -> None:
     try:
         import tkinter as tk
         from tkinter import ttk
@@ -236,6 +246,24 @@ def _run_ui_process(ui_queue: mp.Queue, scan_queue: mp.Queue, fullscreen: bool) 
     progress.pack(fill="x", padx=10, pady=(0, 6))
     progress.start(30)
 
+    controls = tk.Frame(body, bg="#020617")
+    controls.pack(fill="x", pady=(8, 0))
+
+    cancel_button = tk.Button(
+        controls,
+        text="Cancel",
+        bg="#ef4444",
+        fg="#f8fafc",
+        activebackground="#dc2626",
+        activeforeground="#ffffff",
+        relief="flat",
+        padx=16,
+        pady=8,
+        font=("Helvetica", 12, "bold"),
+        state="disabled",
+    )
+    cancel_button.pack(anchor="w")
+
     key_buffer: list[str] = []
 
     def _on_keypress(event) -> None:
@@ -262,6 +290,24 @@ def _run_ui_process(ui_queue: mp.Queue, scan_queue: mp.Queue, fullscreen: bool) 
 
     root.bind("<KeyPress>", _on_keypress)
 
+    def _is_cancellable_state(state_name: str) -> bool:
+        return state_name in {
+            "unlocking",
+            "locker_open",
+            "waiting_weight",
+            "waiting_signature",
+            "close_blocked",
+            "closing",
+        }
+
+    def _on_cancel() -> None:
+        try:
+            cancel_queue.put_nowait(True)
+        except Exception:
+            logger.warning("UI cancel queue is full; dropping cancel tap")
+
+    cancel_button.configure(command=_on_cancel)
+
     def poll() -> None:
         while True:
             try:
@@ -275,6 +321,7 @@ def _run_ui_process(ui_queue: mp.Queue, scan_queue: mp.Queue, fullscreen: bool) 
             msg_var.set(payload.get("subtitle", ""))
             updated_var.set(f"Last update: {payload.get('updated_at', '')}")
             status_badge.configure(bg=STATE_COLORS.get(state_name, "#0ea5e9"))
+            cancel_button.configure(state="normal" if _is_cancellable_state(state_name) else "disabled")
 
         clock_var.set(datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S"))
         root.after(150, poll)

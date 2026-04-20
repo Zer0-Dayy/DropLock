@@ -32,6 +32,12 @@ class FakeFirebaseRepo:
     def mark_qr_token_used(self, token_id):
         self.marked_token = token_id
 
+    def update_locker_state_post_session(self, **kwargs):
+        return None
+
+    def update_booking_status_post_session(self, **kwargs):
+        return None
+
     def update_locker_heartbeat(self, **kwargs):
         self.heartbeat_updates.append(kwargs)
 
@@ -228,6 +234,97 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertIsNone(repo.marked_token)
         self.assertTrue(ui.cancelled)
         self.assertFalse(ui.idle_called)
+
+    def test_cancel_request_clears_active_session_before_close(self):
+        repo = FakeFirebaseRepo()
+
+        class FakeUI:
+            def __init__(self):
+                self.cancelled = False
+                self.cancel_requests = [True]
+
+            def get_cancel_nowait(self):
+                return self.cancel_requests.pop(0) if self.cancel_requests else False
+
+            def show_operation_cancelled(self):
+                self.cancelled = True
+
+        ui = FakeUI()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=ui,
+        )
+        orchestrator._active_validation = ValidationResult(allowed=True, token_data={"purpose": "USER_PICKUP"})
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.WAITING_FOR_OTHER_GATES,
+        )
+
+        did_work = orchestrator._process_cancel_request()
+
+        self.assertTrue(did_work)
+        self.assertIsNone(orchestrator._active_session)
+        self.assertTrue(ui.cancelled)
+        self.assertEqual(repo.appended_events[-1][1], "SESSION_CANCELLED")
+
+    def test_close_ack_marks_qr_token_used_after_session_completion(self):
+        repo = FakeFirebaseRepo()
+        completed = {"called": False}
+
+        class FakeUI:
+            def show_completed(self, **kwargs):
+                completed["called"] = True
+
+            def show_idle(self):
+                return None
+
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=FakeUI(),
+        )
+        orchestrator._active_validation = ValidationResult(allowed=True, token_data={"purpose": "USER_PICKUP"})
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.CLOSING,
+            signature_captured_at=datetime.utcnow(),
+            signature_path="/tmp/signature.png",
+        )
+
+        orchestrator._on_close_ack(
+            ControllerEvent(
+                event_type=ControllerEventType.CLOSE_ACK,
+                locker_id="Locker 1",
+                request_id="req-1",
+            )
+        )
+
+        self.assertEqual(repo.marked_token, "tok-1")
+        self.assertIsNone(orchestrator._active_session)
+        self.assertTrue(completed["called"])
 
     def test_tamper_heartbeat_updates_tamper_and_notifies_admin_once(self):
         repo = FakeFirebaseRepo()

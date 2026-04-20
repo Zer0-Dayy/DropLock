@@ -47,6 +47,10 @@ class UIControllerStateTests(unittest.TestCase):
         self.assertEqual(ui._state.name, "establishing_connection")
         self.assertEqual(ui._state.title, "Establishing Connection With Locker Module")
 
+    def test_cancel_queue_defaults_false_without_tk(self):
+        ui = UIController(enable_tk=False)
+        self.assertFalse(ui.get_cancel_nowait())
+
 
 if __name__ == "__main__":
     unittest.main()

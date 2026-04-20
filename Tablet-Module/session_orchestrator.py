@@ -85,6 +85,7 @@ class SessionOrchestrator:
             while self._running:
                 did_work = False
                 did_work |= self._process_next_mqtt_message()
+                did_work |= self._process_cancel_request()
                 did_work |= self._process_next_scan()
                 did_work |= self._check_session_timeouts()
                 if not did_work:
@@ -163,6 +164,25 @@ class SessionOrchestrator:
             return True
 
         self._route_event(event)
+        return True
+
+    def _process_cancel_request(self) -> bool:
+        if not self._ui_controller or not hasattr(self._ui_controller, "get_cancel_nowait"):
+            return False
+
+        if not self._ui_controller.get_cancel_nowait():
+            return False
+
+        if self._active_session is None:
+            return True
+
+        if self._active_session.phase == SessionPhase.CLOSING:
+            self._show_error_ui("Finalizing locker close. Cancellation is no longer available.")
+            return True
+
+        self._append_booking_event("SESSION_CANCELLED", {"phase": self._active_session.phase.value})
+        self._show_operation_cancelled_ui()
+        self._clear_active_session(show_idle=False)
         return True
 
     def _route_event(self, event: ControllerEvent) -> None:
@@ -301,14 +321,6 @@ class SessionOrchestrator:
             self._show_signature_failed_ui(signature.validation_reason)
             return
 
-        try:
-            self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
-        except Exception as exc:
-            logger.exception("Failed to mark QR token used token_id=%s", self._active_session.token_id)
-            self._show_error_ui(f"Failed to finalize token usage: {exc}")
-            self._clear_active_session()
-            return
-
         self._active_session = replace(
             self._active_session,
             signature_captured_at=signature.signed_at,
@@ -380,6 +392,14 @@ class SessionOrchestrator:
         assert self._active_session is not None
 
         purpose = self._purpose()
+        try:
+            self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
+        except Exception as exc:
+            logger.exception("Failed to mark QR token used token_id=%s", self._active_session.token_id)
+            self._show_error_ui(f"Failed to finalize token usage: {exc}")
+            self._clear_active_session()
+            return
+
         try:
             self._firebase_repo.update_locker_state_post_session(
                 sector_id=self._active_session.sector_id,

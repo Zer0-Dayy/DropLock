@@ -396,6 +396,14 @@ class SessionOrchestrator:
             return
 
         try:
+            self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
+        except Exception as exc:
+            logger.exception("Failed to mark QR token used token_id=%s", self._active_session.token_id)
+            self._show_error_ui(f"Failed to finalize token usage: {exc}")
+            self._clear_active_session()
+            return
+
+        try:
             self._firebase_repo.update_locker_state_post_session(
                 sector_id=self._active_session.sector_id,
                 locker_id=self._active_session.locker_id,

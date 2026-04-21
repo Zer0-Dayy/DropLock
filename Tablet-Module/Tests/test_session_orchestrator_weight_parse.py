@@ -279,6 +279,55 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertTrue(ui.cancelled)
         self.assertEqual(repo.appended_events[-1][1], "SESSION_CANCELLED")
 
+    def test_cancel_request_is_rejected_while_unlocking(self):
+        repo = FakeFirebaseRepo()
+
+        class FakeUI:
+            def __init__(self):
+                self.cancelled = False
+                self.cancel_requests = [True]
+                self.errors = []
+
+            def get_cancel_nowait(self):
+                return self.cancel_requests.pop(0) if self.cancel_requests else False
+
+            def show_operation_cancelled(self):
+                self.cancelled = True
+
+            def show_error(self, reason):
+                self.errors.append(reason)
+
+        ui = FakeUI()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            ui_controller=ui,
+        )
+        orchestrator._active_validation = ValidationResult(allowed=True, token_data={"purpose": "USER_PICKUP"})
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.UNLOCKING,
+        )
+
+        did_work = orchestrator._process_cancel_request()
+
+        self.assertTrue(did_work)
+        self.assertIsNotNone(orchestrator._active_session)
+        self.assertFalse(ui.cancelled)
+        self.assertEqual(repo.appended_events, [])
+        self.assertEqual(len(ui.errors), 1)
+
     def test_close_ack_marks_qr_token_used_after_session_completion(self):
         repo = FakeFirebaseRepo()
         completed = {"called": False}
@@ -325,6 +374,37 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         self.assertEqual(repo.marked_token, "tok-1")
         self.assertIsNone(orchestrator._active_session)
         self.assertTrue(completed["called"])
+
+    def test_close_ack_timeout_marks_token_used_before_failing(self):
+        repo = FakeFirebaseRepo()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+        )
+        orchestrator._active_validation = ValidationResult(allowed=True, token_data={"purpose": "USER_PICKUP"})
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="Locker 1",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.CLOSING,
+        )
+        orchestrator._active_close_sent_mono = 0.0
+        orchestrator._close_ack_timeout_s = 0.0
+
+        did_work = orchestrator._check_session_timeouts()
+
+        self.assertTrue(did_work)
+        self.assertEqual(repo.marked_token, "tok-1")
+        self.assertIsNone(orchestrator._active_session)
 
     def test_tamper_heartbeat_updates_tamper_and_notifies_admin_once(self):
         repo = FakeFirebaseRepo()

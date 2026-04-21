@@ -176,8 +176,8 @@ class SessionOrchestrator:
         if self._active_session is None:
             return True
 
-        if self._active_session.phase == SessionPhase.CLOSING:
-            self._show_error_ui("Finalizing locker close. Cancellation is no longer available.")
+        if self._active_session.phase in (SessionPhase.UNLOCKING, SessionPhase.CLOSING):
+            self._show_error_ui("Cancellation is unavailable while controller commands are in flight.")
             return True
 
         self._append_booking_event("SESSION_CANCELLED", {"phase": self._active_session.phase.value})
@@ -392,6 +392,9 @@ class SessionOrchestrator:
         assert self._active_session is not None
 
         purpose = self._purpose()
+        if not self._mark_active_token_used():
+            return
+
         try:
             self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
         except Exception as exc:
@@ -476,9 +479,22 @@ class SessionOrchestrator:
                 return True
         if self._active_session.phase == SessionPhase.CLOSING and self._active_close_sent_mono is not None:
             if now - self._active_close_sent_mono > self._close_ack_timeout_s:
+                self._mark_active_token_used()
                 self._fail_active_session("CLOSE_ACK_TIMEOUT")
                 return True
         return False
+
+    def _mark_active_token_used(self) -> bool:
+        if self._active_session is None:
+            return False
+        try:
+            self._firebase_repo.mark_qr_token_used(token_id=self._active_session.token_id)
+        except Exception as exc:
+            logger.exception("Failed to mark QR token used token_id=%s", self._active_session.token_id)
+            self._show_error_ui(f"Failed to finalize token usage: {exc}")
+            self._clear_active_session()
+            return False
+        return True
 
     def _build_session(self, token_id: str, validation: ValidationResult) -> LockerSession:
         token_data = validation.token_data or {}

@@ -143,6 +143,19 @@ class FirebaseRepo:
             )
         return data
 
+    def get_admin_commands(self, sector_id: str) -> dict[str, dict[str, Any]]:
+        data = self.get_json(f"adminCommands/{sector_id}")
+        if data is None:
+            return {}
+        if not isinstance(data, dict):
+            raise FirebaseRepoError(
+                f"Expected object at adminCommands/{sector_id}, got {type(data).__name__}"
+            )
+        return data
+
+    def delete_admin_command(self, *, sector_id: str, locker_id: str, cmd_id: str) -> None:
+        self.delete_json(f"adminCommands/{sector_id}/{locker_id}/{cmd_id}")
+
     # ------------------------------------------------------------------
     # QR token helpers
     # ------------------------------------------------------------------

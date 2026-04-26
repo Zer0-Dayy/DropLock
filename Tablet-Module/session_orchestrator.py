@@ -82,6 +82,7 @@ class SessionOrchestrator:
         self._tamper_alert_active: dict[str, bool] = {}
         self._admin_command_last_poll_mono = 0.0
         self._admin_open_in_flight: set[str] = set()
+        self._admin_open_pending_ack: set[tuple[str, str]] = set()
 
     def run_forever(self) -> None:
         self.start()
@@ -502,6 +503,19 @@ class SessionOrchestrator:
             for cmd_id, payload in command_map.items():
                 if locker_id in self._admin_open_in_flight:
                     continue
+                admin_cmd_key = (locker_id, cmd_id)
+                if admin_cmd_key in self._admin_open_pending_ack:
+                    try:
+                        self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
+                    except Exception:
+                        logger.exception(
+                            "Failed retrying admin command ack cmd_id=%s locker_id=%s",
+                            cmd_id,
+                            locker_id,
+                        )
+                    else:
+                        self._admin_open_pending_ack.discard(admin_cmd_key)
+                    return True
                 if not isinstance(payload, dict):
                     self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     return True
@@ -526,6 +540,7 @@ class SessionOrchestrator:
                     cmd_id,
                     locker_id,
                 )
+                self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
                 return
 
             locker = self._firebase_repo.get_locker(self._device_context.sector_id, locker_id) or {}
@@ -559,13 +574,16 @@ class SessionOrchestrator:
                 },
             )
             logger.info("Dispatched admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
-            self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+            admin_cmd_key = (locker_id, cmd_id)
+            self._admin_open_pending_ack.add(admin_cmd_key)
+            self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
+            self._admin_open_pending_ack.discard(admin_cmd_key)
         except Exception:
             logger.exception("Failed handling admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
         finally:
             self._admin_open_in_flight.discard(locker_id)
 
-    def _ack_admin_command(self, *, locker_id: str, cmd_id: str) -> None:
+    def _ack_admin_command(self, *, locker_id: str, cmd_id: str, raise_on_error: bool = False) -> None:
         try:
             self._firebase_repo.delete_admin_command(
                 sector_id=self._device_context.sector_id,
@@ -578,6 +596,8 @@ class SessionOrchestrator:
                 cmd_id,
                 locker_id,
             )
+            if raise_on_error:
+                raise
 
     def _mark_active_token_used(self) -> bool:
         if self._active_session is None:

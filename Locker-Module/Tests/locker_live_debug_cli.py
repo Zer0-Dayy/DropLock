@@ -105,7 +105,7 @@ def main() -> int:
 
             if cmd == "u":
                 print(f"Unlocking {locker_id}...")
-                locker.unlock(duration=2)
+                locker.unlock()
                 print(f"{locker_id} unlock pulse complete.")
             elif cmd == "s":
                 _print_locker_state(locker_id, locker)

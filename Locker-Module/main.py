@@ -104,7 +104,7 @@ class DropLockController:
             logger.warning("OPEN for unknown locker_id=%s", locker_id)
             return
 
-        locker.unlock(duration=2)
+        locker.unlock(duration=0.5)
 
         self.publish_event(
             locker_id,

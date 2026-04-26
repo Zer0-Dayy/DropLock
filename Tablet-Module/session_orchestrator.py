@@ -488,6 +488,10 @@ class SessionOrchestrator:
             return False
         self._admin_command_last_poll_mono = now_mono
 
+        if self._active_session is not None:
+            logger.debug("Skipping admin command polling while locker flow is active")
+            return False
+
         try:
             sector_commands = self._firebase_repo.get_admin_commands(self._device_context.sector_id)
         except Exception:
@@ -534,30 +538,8 @@ class SessionOrchestrator:
 
     def _execute_admin_open(self, *, locker_id: str, cmd_id: str, payload: dict[str, Any]) -> None:
         try:
-            if self._active_session is not None:
-                logger.info(
-                    "Deferring admin OPEN cmd_id=%s locker_id=%s because a QR flow is active",
-                    cmd_id,
-                    locker_id,
-                )
-                self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
-                return
-
             locker = self._firebase_repo.get_locker(self._device_context.sector_id, locker_id) or {}
             active_booking_id = str(locker.get("activeBookingId") or "").strip()
-
-            if active_booking_id:
-                booking = self._firebase_repo.get_booking(active_booking_id) or {}
-                status = str(booking.get("status") or "").upper()
-                if status in {"DROP_PENDING", "PICKUP_PENDING"}:
-                    logger.info(
-                        "Skipping admin OPEN cmd_id=%s locker_id=%s because booking_id=%s is %s",
-                        cmd_id,
-                        locker_id,
-                        active_booking_id,
-                        status,
-                    )
-                    return
 
             self._mqtt_client.publish_json(
                 topic=f"droplock/{self._device_context.sector_id}/{locker_id}/cmd",
@@ -569,8 +551,8 @@ class SessionOrchestrator:
                     "sectorId": self._device_context.sector_id,
                     "lockerId": locker_id,
                     "actorUid": str(payload.get("actorUid") or "admin"),
-                    "source": "ADMIN_DASHBOARD",
-                    "commandId": cmd_id,
+                    "bookingId": active_booking_id or f"admin_{cmd_id}",
+                    "tokenId": f"admin_{cmd_id}",
                 },
             )
             logger.info("Dispatched admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)

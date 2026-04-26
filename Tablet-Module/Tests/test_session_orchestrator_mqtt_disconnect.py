@@ -334,9 +334,11 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         self.assertEqual(len(mqtt.published), 1)
         self.assertEqual(mqtt.published[0][0], "droplock/S1/L3/cmd")
+        self.assertEqual(mqtt.published[0][1]["bookingId"], "b-1")
+        self.assertEqual(mqtt.published[0][1]["tokenId"], "admin_cmd123")
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
-    def test_admin_open_skipped_during_pickup_or_drop_priority(self):
+    def test_admin_open_is_still_dispatched_when_booking_is_pending(self):
         repo = _RepoAdminCommands(booking_status="PICKUP_PENDING")
         mqtt = _MQTTAdmin()
         mqtt.gate.set()
@@ -353,10 +355,11 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         orchestrator._execute_admin_open(locker_id="L3", cmd_id="cmd123", payload={"actorUid": "admin-1"})
 
-        self.assertEqual(mqtt.published, [])
-        self.assertEqual(repo.deleted, [])
+        self.assertEqual(len(mqtt.published), 1)
+        self.assertEqual(mqtt.published[0][0], "droplock/S1/L3/cmd")
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
-    def test_admin_open_acknowledged_when_qr_flow_is_active(self):
+    def test_admin_commands_are_ignored_while_qr_flow_is_active(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")
         mqtt = _MQTTAdmin()
         mqtt.gate.set()
@@ -371,11 +374,14 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
             close_gates=CloseGates(),
         )
         orchestrator._active_session = SimpleNamespace()
+        orchestrator._admin_command_last_poll_mono = 0.0
 
-        orchestrator._execute_admin_open(locker_id="L3", cmd_id="cmd123", payload={"actorUid": "admin-1"})
+        did_work = orchestrator._process_next_admin_command()
 
+        self.assertFalse(did_work)
+        self.assertEqual(repo.reads, 0)
         self.assertEqual(mqtt.published, [])
-        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
+        self.assertEqual(repo.deleted, [])
 
     def test_admin_command_processing_is_non_blocking(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")

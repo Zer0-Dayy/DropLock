@@ -14,6 +14,7 @@ class FakeFirebaseRepo:
         self.booking = {"userId": "user-1"}
         self.profile = {"email": "user@example.com", "displayName": "User One"}
         self.marked_token = None
+        self.mark_qr_token_used_calls = 0
         self.heartbeat_updates = []
         self.tamper_updates = []
 
@@ -31,6 +32,7 @@ class FakeFirebaseRepo:
 
     def mark_qr_token_used(self, token_id):
         self.marked_token = token_id
+        self.mark_qr_token_used_calls += 1
 
     def update_locker_state_post_session(self, **kwargs):
         return None
@@ -372,6 +374,7 @@ class SessionOrchestratorWeightParseTests(unittest.TestCase):
         )
 
         self.assertEqual(repo.marked_token, "tok-1")
+        self.assertEqual(repo.mark_qr_token_used_calls, 1)
         self.assertIsNone(orchestrator._active_session)
         self.assertTrue(completed["called"])
 

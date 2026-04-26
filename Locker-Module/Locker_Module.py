@@ -75,7 +75,7 @@ class Locker:
             before_read=before_read,
         )
 
-    def unlock(self, duration=0.5):
+    def unlock(self, duration=1.0):
         self.state = LockerState.OPENING
         self.expected_closed = False
         self.lock.unlock(duration)

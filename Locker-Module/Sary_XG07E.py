@@ -22,7 +22,7 @@ class Lock:
         GPIO.output(self.relay_pin, GPIO.HIGH)
         logger.info("Lock initialized on GPIO%s", self.relay_pin)
 
-    def unlock(self, duration=1.0):
+    def unlock(self, duration=2.0):
         """Pulse unlock for a duration, then return to locked state."""
         logger.info("Unlocking lock on GPIO%s for %ss", self.relay_pin, duration)
         GPIO.output(self.relay_pin, GPIO.LOW)

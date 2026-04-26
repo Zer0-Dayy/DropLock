@@ -49,6 +49,7 @@ class SessionOrchestrator:
         close_ack_timeout_s: float = 20.0,
         mqtt_start_retry_delay_s: float = 2.0,
         mqtt_start_max_attempts: int | None = None,
+        admin_command_poll_interval_s: float = 0.5,
     ) -> None:
         self._device_context = device_context
         self._scanner_input = scanner_input
@@ -69,6 +70,7 @@ class SessionOrchestrator:
         self._close_ack_timeout_s = close_ack_timeout_s
         self._mqtt_start_retry_delay_s = mqtt_start_retry_delay_s
         self._mqtt_start_max_attempts = mqtt_start_max_attempts
+        self._admin_command_poll_interval_s = max(0.1, float(admin_command_poll_interval_s))
 
         self._running = False
         self._active_session: LockerSession | None = None
@@ -78,6 +80,8 @@ class SessionOrchestrator:
 
         self._locker_door_closed: dict[str, bool] = {}
         self._tamper_alert_active: dict[str, bool] = {}
+        self._admin_command_last_poll_mono = 0.0
+        self._admin_open_in_flight: set[str] = set()
 
     def run_forever(self) -> None:
         self.start()
@@ -88,6 +92,7 @@ class SessionOrchestrator:
                 did_work |= self._process_cancel_request()
                 did_work |= self._process_next_scan()
                 did_work |= self._check_session_timeouts()
+                did_work |= self._process_next_admin_command()
                 if not did_work:
                     time.sleep(self._idle_sleep_s)
         finally:
@@ -483,6 +488,104 @@ class SessionOrchestrator:
                 self._fail_active_session("CLOSE_ACK_TIMEOUT")
                 return True
         return False
+
+    def _process_next_admin_command(self) -> bool:
+        now_mono = time.monotonic()
+        if now_mono - self._admin_command_last_poll_mono < self._admin_command_poll_interval_s:
+            return False
+        self._admin_command_last_poll_mono = now_mono
+
+        try:
+            sector_commands = self._firebase_repo.get_admin_commands(self._device_context.sector_id)
+        except Exception:
+            logger.exception(
+                "Failed reading admin commands for sector_id=%s",
+                self._device_context.sector_id,
+            )
+            return False
+
+        for locker_id, command_map in sector_commands.items():
+            if not isinstance(command_map, dict):
+                continue
+            for cmd_id, payload in command_map.items():
+                if locker_id in self._admin_open_in_flight:
+                    continue
+                if not isinstance(payload, dict):
+                    self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+                    return True
+                if str(payload.get("cmd") or "").upper() != "OPEN":
+                    self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+                    return True
+                self._admin_open_in_flight.add(locker_id)
+                threading.Thread(
+                    target=self._execute_admin_open,
+                    kwargs={"locker_id": locker_id, "cmd_id": cmd_id, "payload": payload},
+                    daemon=True,
+                    name=f"admin-open-{locker_id}",
+                ).start()
+                return True
+        return False
+
+    def _execute_admin_open(self, *, locker_id: str, cmd_id: str, payload: dict[str, Any]) -> None:
+        try:
+            if self._active_session is not None:
+                logger.info(
+                    "Deferring admin OPEN cmd_id=%s locker_id=%s because a QR flow is active",
+                    cmd_id,
+                    locker_id,
+                )
+                return
+
+            locker = self._firebase_repo.get_locker(self._device_context.sector_id, locker_id) or {}
+            active_booking_id = str(locker.get("activeBookingId") or "").strip()
+
+            if active_booking_id:
+                booking = self._firebase_repo.get_booking(active_booking_id) or {}
+                status = str(booking.get("status") or "").upper()
+                if status in {"DROP_PENDING", "PICKUP_PENDING"}:
+                    logger.info(
+                        "Skipping admin OPEN cmd_id=%s locker_id=%s because booking_id=%s is %s",
+                        cmd_id,
+                        locker_id,
+                        active_booking_id,
+                        status,
+                    )
+                    return
+
+            self._mqtt_client.publish_json(
+                topic=f"droplock/{self._device_context.sector_id}/{locker_id}/cmd",
+                payload={
+                    "schemaVersion": 1,
+                    "type": "OPEN",
+                    "requestId": f"admin_{cmd_id}",
+                    "ts": int(time.time() * 1000),
+                    "sectorId": self._device_context.sector_id,
+                    "lockerId": locker_id,
+                    "actorUid": str(payload.get("actorUid") or "admin"),
+                    "source": "ADMIN_DASHBOARD",
+                    "commandId": cmd_id,
+                },
+            )
+            logger.info("Dispatched admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
+            self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+        except Exception:
+            logger.exception("Failed handling admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
+        finally:
+            self._admin_open_in_flight.discard(locker_id)
+
+    def _ack_admin_command(self, *, locker_id: str, cmd_id: str) -> None:
+        try:
+            self._firebase_repo.delete_admin_command(
+                sector_id=self._device_context.sector_id,
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+            )
+        except Exception:
+            logger.exception(
+                "Failed deleting admin command cmd_id=%s locker_id=%s",
+                cmd_id,
+                locker_id,
+            )
 
     def _mark_active_token_used(self) -> bool:
         if self._active_session is None:

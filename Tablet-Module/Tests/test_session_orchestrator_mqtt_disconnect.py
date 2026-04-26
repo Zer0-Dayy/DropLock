@@ -1,6 +1,7 @@
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
+import threading
 
 from close_gates import CloseGates
 from datetime import datetime
@@ -85,6 +86,9 @@ class SessionOrchestratorMQTTDisconnectTests(unittest.TestCase):
 
 
 class _RepoCloseAckFailure:
+    def mark_qr_token_used(self, **kwargs):
+        return None
+
     def update_locker_state_post_session(self, **kwargs):
         raise RuntimeError("No data supplied")
 
@@ -123,6 +127,7 @@ class SessionOrchestratorCloseAckFailureTests(unittest.TestCase):
             sector_id="S1",
             locker_id="Locker 1",
             booking_id="book-1",
+            token_id="tok-1",
         )
 
         orchestrator._on_close_ack(SimpleNamespace())
@@ -264,6 +269,107 @@ class SessionOrchestratorMQTTRetryLimitTests(unittest.TestCase):
         self.assertEqual(mqtt.starts, 3)
         self.assertEqual(ui.establishing_count, 2)
         self.assertTrue(ui.errors)
+
+
+class _RepoAdminCommands:
+    def __init__(self, *, booking_status="COMPLETED"):
+        self.booking_status = booking_status
+        self.deleted = []
+        self.reads = 0
+
+    def get_admin_commands(self, sector_id: str):
+        self.reads += 1
+        return {
+            "L3": {
+                "cmd123": {"cmd": "OPEN", "actorUid": "admin-1"},
+            }
+        }
+
+    def get_locker(self, sector_id: str, locker_id: str):
+        return {"activeBookingId": "b-1"}
+
+    def get_booking(self, booking_id: str):
+        return {"status": self.booking_status}
+
+    def delete_admin_command(self, *, sector_id: str, locker_id: str, cmd_id: str):
+        self.deleted.append((sector_id, locker_id, cmd_id))
+
+
+class _MQTTAdmin:
+    def __init__(self):
+        self.published = []
+        self.gate = threading.Event()
+
+    def publish_json(self, *, topic: str, payload: dict):
+        self.gate.wait(timeout=1.0)
+        self.published.append((topic, payload))
+
+
+class SessionOrchestratorAdminOpenTests(unittest.TestCase):
+    def test_admin_open_is_dispatched_and_acknowledged(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED")
+        mqtt = _MQTTAdmin()
+        mqtt.gate.set()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            admin_command_poll_interval_s=0.1,
+        )
+
+        orchestrator._execute_admin_open(locker_id="L3", cmd_id="cmd123", payload={"actorUid": "admin-1"})
+
+        self.assertEqual(len(mqtt.published), 1)
+        self.assertEqual(mqtt.published[0][0], "droplock/S1/L3/cmd")
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
+
+    def test_admin_open_skipped_during_pickup_or_drop_priority(self):
+        repo = _RepoAdminCommands(booking_status="PICKUP_PENDING")
+        mqtt = _MQTTAdmin()
+        mqtt.gate.set()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+        )
+
+        orchestrator._execute_admin_open(locker_id="L3", cmd_id="cmd123", payload={"actorUid": "admin-1"})
+
+        self.assertEqual(mqtt.published, [])
+        self.assertEqual(repo.deleted, [])
+
+    def test_admin_command_processing_is_non_blocking(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED")
+        mqtt = _MQTTAdmin()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            admin_command_poll_interval_s=0.1,
+        )
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(did_work)
+        self.assertEqual(repo.reads, 1)
+        self.assertEqual(len(mqtt.published), 0)
+        mqtt.gate.set()
 
 
 if __name__ == "__main__":

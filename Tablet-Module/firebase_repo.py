@@ -156,6 +156,47 @@ class FirebaseRepo:
     def delete_admin_command(self, *, sector_id: str, locker_id: str, cmd_id: str) -> None:
         self.delete_json(f"adminCommands/{sector_id}/{locker_id}/{cmd_id}")
 
+    def log_admin_command_execution(
+        self,
+        *,
+        sector_id: str,
+        locker_id: str,
+        cmd_id: str,
+        status: str,
+        command_payload: dict[str, Any] | None = None,
+        actor_uid: str | None = None,
+        booking_id: str | None = None,
+        token_id: str | None = None,
+        open_request_id: str | None = None,
+        close_request_id: str | None = None,
+        close_dispatched: bool | None = None,
+        acked: bool | None = None,
+        error: str | None = None,
+        executed_at_ms: int | None = None,
+    ) -> None:
+        """
+        Persist a normalized audit trail record for executed/ignored admin commands.
+        """
+        record = {
+            "sectorId": sector_id,
+            "lockerId": locker_id,
+            "cmdId": cmd_id,
+            "cmd": str((command_payload or {}).get("cmd") or "").upper(),
+            "actorUid": actor_uid or str((command_payload or {}).get("actorUid") or "admin"),
+            "bookingId": booking_id or str((command_payload or {}).get("bookingId") or ""),
+            "tokenId": token_id or str((command_payload or {}).get("tokenId") or ""),
+            "openRequestId": open_request_id or "",
+            "closeRequestId": close_request_id or "",
+            "closeDispatched": close_dispatched,
+            "acked": acked,
+            "status": status,
+            "error": error or "",
+            "requestedAt": (command_payload or {}).get("ts"),
+            "executedAt": executed_at_ms if executed_at_ms is not None else self._now_ms(),
+            "raw": command_payload or {},
+        }
+        self.put_json(f"adminCommandLogs/{sector_id}/{locker_id}/{cmd_id}", record)
+
     # ------------------------------------------------------------------
     # QR token helpers
     # ------------------------------------------------------------------

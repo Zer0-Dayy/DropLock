@@ -537,9 +537,23 @@ class SessionOrchestrator:
                     ).start()
                     return True
                 if not isinstance(payload, dict):
+                    self._log_admin_command_execution(
+                        locker_id=locker_id,
+                        cmd_id=cmd_id,
+                        payload={},
+                        status="IGNORED_INVALID_PAYLOAD",
+                        acked=True,
+                    )
                     self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     return True
                 if str(payload.get("cmd") or "").upper() != "OPEN":
+                    self._log_admin_command_execution(
+                        locker_id=locker_id,
+                        cmd_id=cmd_id,
+                        payload=payload,
+                        status="IGNORED_UNSUPPORTED_CMD",
+                        acked=True,
+                    )
                     self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     return True
                 self._admin_open_in_flight.add(locker_id)
@@ -560,6 +574,8 @@ class SessionOrchestrator:
             actor_uid = str(payload.get("actorUid") or "admin")
             booking_id = active_booking_id or f"admin_{cmd_id}"
             token_id = f"admin_{cmd_id}"
+            open_request_id = f"admin_{cmd_id}"
+            close_request_id = f"admin_{cmd_id}_close"
             topic = f"droplock/{self._device_context.sector_id}/{locker_id}/cmd"
             now_ms = int(time.time() * 1000)
 
@@ -568,7 +584,7 @@ class SessionOrchestrator:
                 payload={
                     "schemaVersion": 1,
                     "type": "OPEN",
-                    "requestId": f"admin_{cmd_id}",
+                    "requestId": open_request_id,
                     "ts": now_ms,
                     "sectorId": self._device_context.sector_id,
                     "lockerId": locker_id,
@@ -581,7 +597,7 @@ class SessionOrchestrator:
                 close_payload = {
                     "schemaVersion": 1,
                     "type": "CLOSE",
-                    "requestId": f"admin_{cmd_id}_close",
+                    "requestId": close_request_id,
                     "ts": now_ms,
                     "sectorId": self._device_context.sector_id,
                     "lockerId": locker_id,
@@ -595,6 +611,20 @@ class SessionOrchestrator:
                 )
             except Exception:
                 self._admin_close_retry_payloads[admin_cmd_key] = (topic, close_payload)
+                self._log_admin_command_execution(
+                    locker_id=locker_id,
+                    cmd_id=cmd_id,
+                    payload=payload,
+                    status="CLOSE_DISPATCH_FAILED_RETRY_QUEUED",
+                    actor_uid=actor_uid,
+                    booking_id=booking_id,
+                    token_id=token_id,
+                    open_request_id=open_request_id,
+                    close_request_id=close_request_id,
+                    close_dispatched=False,
+                    acked=False,
+                    error="CLOSE_DISPATCH_FAILED",
+                )
                 logger.exception(
                     "Failed dispatching admin CLOSE after OPEN cmd_id=%s locker_id=%s",
                     cmd_id,
@@ -606,7 +636,28 @@ class SessionOrchestrator:
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
             self._admin_open_pending_ack.discard(admin_cmd_key)
             self._admin_close_retry_payloads.pop(admin_cmd_key, None)
+            self._log_admin_command_execution(
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                payload=payload,
+                status="EXECUTED",
+                actor_uid=actor_uid,
+                booking_id=booking_id,
+                token_id=token_id,
+                open_request_id=open_request_id,
+                close_request_id=close_request_id,
+                close_dispatched=True,
+                acked=True,
+            )
         except Exception:
+            self._log_admin_command_execution(
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                payload=payload,
+                status="EXECUTION_FAILED",
+                acked=False,
+                error="OPEN_OR_ACK_FAILED",
+            )
             logger.exception("Failed handling admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
         finally:
             self._admin_open_in_flight.discard(locker_id)
@@ -620,10 +671,73 @@ class SessionOrchestrator:
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
             self._admin_open_pending_ack.discard(admin_cmd_key)
             self._admin_close_retry_payloads.pop(admin_cmd_key, None)
+            self._log_admin_command_execution(
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                payload=close_payload,
+                status="EXECUTED_AFTER_CLOSE_RETRY",
+                actor_uid=str(close_payload.get("actorUid") or "admin"),
+                booking_id=str(close_payload.get("bookingId") or ""),
+                token_id=str(close_payload.get("tokenId") or ""),
+                open_request_id=f"admin_{cmd_id}",
+                close_request_id=str(close_payload.get("requestId") or ""),
+                close_dispatched=True,
+                acked=True,
+            )
         except Exception:
+            self._log_admin_command_execution(
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                payload=close_payload,
+                status="CLOSE_RETRY_FAILED",
+                acked=False,
+                error="CLOSE_RETRY_FAILED",
+            )
             logger.exception("Failed retrying admin CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
         finally:
             self._admin_open_in_flight.discard(locker_id)
+
+    def _log_admin_command_execution(
+        self,
+        *,
+        locker_id: str,
+        cmd_id: str,
+        payload: dict[str, Any],
+        status: str,
+        actor_uid: str | None = None,
+        booking_id: str | None = None,
+        token_id: str | None = None,
+        open_request_id: str | None = None,
+        close_request_id: str | None = None,
+        close_dispatched: bool | None = None,
+        acked: bool | None = None,
+        error: str | None = None,
+    ) -> None:
+        if not hasattr(self._firebase_repo, "log_admin_command_execution"):
+            return
+        try:
+            self._firebase_repo.log_admin_command_execution(
+                sector_id=self._device_context.sector_id,
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                status=status,
+                command_payload=payload,
+                actor_uid=actor_uid,
+                booking_id=booking_id,
+                token_id=token_id,
+                open_request_id=open_request_id,
+                close_request_id=close_request_id,
+                close_dispatched=close_dispatched,
+                acked=acked,
+                error=error,
+            )
+        except Exception:
+            logger.exception(
+                "Failed logging admin command execution cmd_id=%s locker_id=%s status=%s",
+                cmd_id,
+                locker_id,
+                status,
+            )
 
     def _ack_admin_command(self, *, locker_id: str, cmd_id: str, raise_on_error: bool = False) -> None:
         try:

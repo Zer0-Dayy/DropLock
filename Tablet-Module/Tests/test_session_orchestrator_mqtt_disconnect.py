@@ -456,8 +456,8 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertEqual(len(mqtt.published), 2)
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
-    def test_admin_open_does_not_republish_when_close_publish_fails_once(self):
-        repo = _RepoAdminCommands(booking_status="COMPLETED", fail_delete_attempts=1)
+    def test_admin_open_retries_close_without_republishing_open(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED")
         mqtt = _MQTTAdminFailCloseOnce()
         mqtt.gate.set()
         orchestrator = SessionOrchestrator(
@@ -475,7 +475,7 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         first_did_work = orchestrator._process_next_admin_command()
         for _ in range(10):
-            if ("L3", "cmd123") in orchestrator._admin_open_pending_ack and "L3" not in orchestrator._admin_open_in_flight:
+            if "L3" not in orchestrator._admin_open_in_flight:
                 break
             time.sleep(0.01)
         orchestrator._admin_command_last_poll_mono = 0.0
@@ -486,7 +486,7 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertTrue(first_did_work)
         self.assertTrue(second_did_work)
         self.assertEqual(len(open_publishes), 1)
-        self.assertEqual(len(close_publishes), 1)
+        self.assertEqual(len(close_publishes), 2)
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
 

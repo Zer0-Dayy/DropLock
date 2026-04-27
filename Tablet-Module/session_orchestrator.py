@@ -83,7 +83,7 @@ class SessionOrchestrator:
         self._admin_command_last_poll_mono = 0.0
         self._admin_open_in_flight: set[str] = set()
         self._admin_open_pending_ack: set[tuple[str, str]] = set()
-        self._admin_close_retry_payloads: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
+        self._admin_close_retry_payloads: dict[tuple[str, str], tuple[str, dict[str, Any], dict[str, Any]]] = {}
 
     def run_forever(self) -> None:
         self.start()
@@ -523,7 +523,7 @@ class SessionOrchestrator:
                         self._admin_close_retry_payloads.pop(admin_cmd_key, None)
                     return True
                 if admin_cmd_key in self._admin_close_retry_payloads:
-                    topic, close_payload = self._admin_close_retry_payloads[admin_cmd_key]
+                    topic, close_payload, original_payload = self._admin_close_retry_payloads[admin_cmd_key]
                     self._admin_open_in_flight.add(locker_id)
                     threading.Thread(
                         target=self._retry_admin_close,
@@ -532,30 +532,31 @@ class SessionOrchestrator:
                             "cmd_id": cmd_id,
                             "topic": topic,
                             "close_payload": close_payload,
+                            "original_payload": original_payload,
                         },
                         daemon=True,
                         name=f"admin-close-{locker_id}",
                     ).start()
                     return True
                 if not isinstance(payload, dict):
+                    acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     self._log_admin_command_execution(
                         locker_id=locker_id,
                         cmd_id=cmd_id,
                         payload={},
                         status="IGNORED_INVALID_PAYLOAD",
-                        acked=True,
+                        acked=acked,
                     )
-                    self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     return True
                 if str(payload.get("cmd") or "").upper() != "OPEN":
+                    acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     self._log_admin_command_execution(
                         locker_id=locker_id,
                         cmd_id=cmd_id,
                         payload=payload,
                         status="IGNORED_UNSUPPORTED_CMD",
-                        acked=True,
+                        acked=acked,
                     )
-                    self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     return True
                 self._admin_open_in_flight.add(locker_id)
                 threading.Thread(
@@ -611,7 +612,7 @@ class SessionOrchestrator:
                     payload=close_payload,
                 )
             except Exception:
-                self._admin_close_retry_payloads[admin_cmd_key] = (topic, close_payload)
+                self._admin_close_retry_payloads[admin_cmd_key] = (topic, close_payload, payload)
                 self._log_admin_command_execution(
                     locker_id=locker_id,
                     cmd_id=cmd_id,
@@ -663,7 +664,15 @@ class SessionOrchestrator:
         finally:
             self._admin_open_in_flight.discard(locker_id)
 
-    def _retry_admin_close(self, *, locker_id: str, cmd_id: str, topic: str, close_payload: dict[str, Any]) -> None:
+    def _retry_admin_close(
+        self,
+        *,
+        locker_id: str,
+        cmd_id: str,
+        topic: str,
+        close_payload: dict[str, Any],
+        original_payload: dict[str, Any],
+    ) -> None:
         admin_cmd_key = (locker_id, cmd_id)
         try:
             self._mqtt_client.publish_json(topic=topic, payload=close_payload)
@@ -675,7 +684,7 @@ class SessionOrchestrator:
             self._log_admin_command_execution(
                 locker_id=locker_id,
                 cmd_id=cmd_id,
-                payload=close_payload,
+                payload=original_payload,
                 status="EXECUTED_AFTER_CLOSE_RETRY",
                 actor_uid=str(close_payload.get("actorUid") or "admin"),
                 booking_id=str(close_payload.get("bookingId") or ""),
@@ -740,13 +749,14 @@ class SessionOrchestrator:
                 status,
             )
 
-    def _ack_admin_command(self, *, locker_id: str, cmd_id: str, raise_on_error: bool = False) -> None:
+    def _ack_admin_command(self, *, locker_id: str, cmd_id: str, raise_on_error: bool = False) -> bool:
         try:
             self._firebase_repo.delete_admin_command(
                 sector_id=self._device_context.sector_id,
                 locker_id=locker_id,
                 cmd_id=cmd_id,
             )
+            return True
         except Exception:
             logger.exception(
                 "Failed deleting admin command cmd_id=%s locker_id=%s",
@@ -755,6 +765,7 @@ class SessionOrchestrator:
             )
             if raise_on_error:
                 raise
+            return False
 
     def _mark_active_token_used(self) -> bool:
         if self._active_session is None:

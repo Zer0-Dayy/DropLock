@@ -313,6 +313,19 @@ class _MQTTAdmin:
         self.published.append((topic, payload))
 
 
+class _MQTTAdminFailCloseOnce(_MQTTAdmin):
+    def __init__(self):
+        super().__init__()
+        self.close_failures_remaining = 1
+
+    def publish_json(self, *, topic: str, payload: dict):
+        self.gate.wait(timeout=1.0)
+        self.published.append((topic, payload))
+        if payload.get("type") == "CLOSE" and self.close_failures_remaining > 0:
+            self.close_failures_remaining -= 1
+            raise RuntimeError("close publish failed")
+
+
 class SessionOrchestratorAdminOpenTests(unittest.TestCase):
     def test_admin_open_is_dispatched_and_acknowledged(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")
@@ -441,6 +454,39 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertTrue(first_did_work)
         self.assertTrue(second_did_work)
         self.assertEqual(len(mqtt.published), 2)
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
+
+    def test_admin_open_does_not_republish_when_close_publish_fails_once(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED", fail_delete_attempts=1)
+        mqtt = _MQTTAdminFailCloseOnce()
+        mqtt.gate.set()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            admin_command_poll_interval_s=0.1,
+        )
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        first_did_work = orchestrator._process_next_admin_command()
+        for _ in range(10):
+            if ("L3", "cmd123") in orchestrator._admin_open_pending_ack and "L3" not in orchestrator._admin_open_in_flight:
+                break
+            time.sleep(0.01)
+        orchestrator._admin_command_last_poll_mono = 0.0
+        second_did_work = orchestrator._process_next_admin_command()
+
+        open_publishes = [payload for _, payload in mqtt.published if payload.get("type") == "OPEN"]
+        close_publishes = [payload for _, payload in mqtt.published if payload.get("type") == "CLOSE"]
+        self.assertTrue(first_did_work)
+        self.assertTrue(second_did_work)
+        self.assertEqual(len(open_publishes), 1)
+        self.assertEqual(len(close_publishes), 1)
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
 

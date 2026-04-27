@@ -537,6 +537,7 @@ class SessionOrchestrator:
         return False
 
     def _execute_admin_open(self, *, locker_id: str, cmd_id: str, payload: dict[str, Any]) -> None:
+        admin_cmd_key = (locker_id, cmd_id)
         try:
             locker = self._firebase_repo.get_locker(self._device_context.sector_id, locker_id) or {}
             active_booking_id = str(locker.get("activeBookingId") or "").strip()
@@ -560,23 +561,29 @@ class SessionOrchestrator:
                     "tokenId": token_id,
                 },
             )
-            self._mqtt_client.publish_json(
-                topic=topic,
-                payload={
-                    "schemaVersion": 1,
-                    "type": "CLOSE",
-                    "requestId": f"admin_{cmd_id}_close",
-                    "ts": now_ms,
-                    "sectorId": self._device_context.sector_id,
-                    "lockerId": locker_id,
-                    "actorUid": actor_uid,
-                    "bookingId": booking_id,
-                    "tokenId": token_id,
-                },
-            )
-            logger.info("Dispatched admin OPEN+CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
-            admin_cmd_key = (locker_id, cmd_id)
             self._admin_open_pending_ack.add(admin_cmd_key)
+            try:
+                self._mqtt_client.publish_json(
+                    topic=topic,
+                    payload={
+                        "schemaVersion": 1,
+                        "type": "CLOSE",
+                        "requestId": f"admin_{cmd_id}_close",
+                        "ts": now_ms,
+                        "sectorId": self._device_context.sector_id,
+                        "lockerId": locker_id,
+                        "actorUid": actor_uid,
+                        "bookingId": booking_id,
+                        "tokenId": token_id,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Failed dispatching admin CLOSE after OPEN cmd_id=%s locker_id=%s",
+                    cmd_id,
+                    locker_id,
+                )
+            logger.info("Dispatched admin OPEN and attempted CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
             self._admin_open_pending_ack.discard(admin_cmd_key)
         except Exception:

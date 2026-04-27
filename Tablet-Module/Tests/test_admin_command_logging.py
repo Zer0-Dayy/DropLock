@@ -89,3 +89,77 @@ class SessionOrchestratorAdminCommandLoggingTests(unittest.TestCase):
         self.assertEqual(repo.logged[0]["locker_id"], "L1")
         self.assertEqual(repo.logged[0]["cmd_id"], "cmd-9")
 
+    def test_unsupported_command_logs_acked_false_when_delete_fails(self):
+        class RepoFake:
+            def __init__(self):
+                self.logged = []
+
+            def get_admin_commands(self, sector_id):
+                return {"L1": {"cmd-5": {"cmd": "PING"}}}
+
+            def delete_admin_command(self, **kwargs):
+                raise RuntimeError("network failure")
+
+            def log_admin_command_execution(self, **kwargs):
+                self.logged.append(kwargs)
+
+        repo = RepoFake()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=SimpleNamespace(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+        )
+
+        did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(did_work)
+        self.assertEqual(len(repo.logged), 1)
+        self.assertEqual(repo.logged[0]["status"], "IGNORED_UNSUPPORTED_CMD")
+        self.assertFalse(repo.logged[0]["acked"])
+
+    def test_retry_admin_close_logs_original_admin_cmd_payload(self):
+        class RepoFake:
+            def __init__(self):
+                self.logged = []
+
+            def delete_admin_command(self, **kwargs):
+                return None
+
+            def log_admin_command_execution(self, **kwargs):
+                self.logged.append(kwargs)
+
+        class MqttFake:
+            def publish_json(self, *, topic, payload):
+                return None
+
+        repo = RepoFake()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=MqttFake(),
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+        )
+
+        close_payload = {"type": "CLOSE", "requestId": "admin_cmd-2_close", "actorUid": "admin-2"}
+        original_payload = {"cmd": "OPEN", "actorUid": "admin-2"}
+
+        orchestrator._retry_admin_close(
+            locker_id="L1",
+            cmd_id="cmd-2",
+            topic="droplock/S1/L1/cmd",
+            close_payload=close_payload,
+            original_payload=original_payload,
+        )
+
+        self.assertEqual(len(repo.logged), 1)
+        self.assertEqual(repo.logged[0]["status"], "EXECUTED_AFTER_CLOSE_RETRY")
+        self.assertEqual(repo.logged[0]["command_payload"]["cmd"], "OPEN")

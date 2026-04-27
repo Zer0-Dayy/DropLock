@@ -83,6 +83,7 @@ class SessionOrchestrator:
         self._admin_command_last_poll_mono = 0.0
         self._admin_open_in_flight: set[str] = set()
         self._admin_open_pending_ack: set[tuple[str, str]] = set()
+        self._admin_close_retry_payloads: dict[tuple[str, str], tuple[str, dict[str, Any]]] = {}
 
     def run_forever(self) -> None:
         self.start()
@@ -520,6 +521,21 @@ class SessionOrchestrator:
                     else:
                         self._admin_open_pending_ack.discard(admin_cmd_key)
                     return True
+                if admin_cmd_key in self._admin_close_retry_payloads:
+                    topic, close_payload = self._admin_close_retry_payloads[admin_cmd_key]
+                    self._admin_open_in_flight.add(locker_id)
+                    threading.Thread(
+                        target=self._retry_admin_close,
+                        kwargs={
+                            "locker_id": locker_id,
+                            "cmd_id": cmd_id,
+                            "topic": topic,
+                            "close_payload": close_payload,
+                        },
+                        daemon=True,
+                        name=f"admin-close-{locker_id}",
+                    ).start()
+                    return True
                 if not isinstance(payload, dict):
                     self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                     return True
@@ -561,33 +577,51 @@ class SessionOrchestrator:
                     "tokenId": token_id,
                 },
             )
-            self._admin_open_pending_ack.add(admin_cmd_key)
             try:
+                close_payload = {
+                    "schemaVersion": 1,
+                    "type": "CLOSE",
+                    "requestId": f"admin_{cmd_id}_close",
+                    "ts": now_ms,
+                    "sectorId": self._device_context.sector_id,
+                    "lockerId": locker_id,
+                    "actorUid": actor_uid,
+                    "bookingId": booking_id,
+                    "tokenId": token_id,
+                }
                 self._mqtt_client.publish_json(
                     topic=topic,
-                    payload={
-                        "schemaVersion": 1,
-                        "type": "CLOSE",
-                        "requestId": f"admin_{cmd_id}_close",
-                        "ts": now_ms,
-                        "sectorId": self._device_context.sector_id,
-                        "lockerId": locker_id,
-                        "actorUid": actor_uid,
-                        "bookingId": booking_id,
-                        "tokenId": token_id,
-                    },
+                    payload=close_payload,
                 )
             except Exception:
+                self._admin_close_retry_payloads[admin_cmd_key] = (topic, close_payload)
                 logger.exception(
                     "Failed dispatching admin CLOSE after OPEN cmd_id=%s locker_id=%s",
                     cmd_id,
                     locker_id,
                 )
+                return
+            self._admin_open_pending_ack.add(admin_cmd_key)
             logger.info("Dispatched admin OPEN and attempted CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
             self._admin_open_pending_ack.discard(admin_cmd_key)
+            self._admin_close_retry_payloads.pop(admin_cmd_key, None)
         except Exception:
             logger.exception("Failed handling admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
+        finally:
+            self._admin_open_in_flight.discard(locker_id)
+
+    def _retry_admin_close(self, *, locker_id: str, cmd_id: str, topic: str, close_payload: dict[str, Any]) -> None:
+        admin_cmd_key = (locker_id, cmd_id)
+        try:
+            self._mqtt_client.publish_json(topic=topic, payload=close_payload)
+            self._admin_open_pending_ack.add(admin_cmd_key)
+            logger.info("Retried admin CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
+            self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
+            self._admin_open_pending_ack.discard(admin_cmd_key)
+            self._admin_close_retry_payloads.pop(admin_cmd_key, None)
+        except Exception:
+            logger.exception("Failed retrying admin CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
         finally:
             self._admin_open_in_flight.discard(locker_id)
 

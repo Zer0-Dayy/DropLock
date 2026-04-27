@@ -540,22 +540,41 @@ class SessionOrchestrator:
         try:
             locker = self._firebase_repo.get_locker(self._device_context.sector_id, locker_id) or {}
             active_booking_id = str(locker.get("activeBookingId") or "").strip()
+            actor_uid = str(payload.get("actorUid") or "admin")
+            booking_id = active_booking_id or f"admin_{cmd_id}"
+            token_id = f"admin_{cmd_id}"
+            topic = f"droplock/{self._device_context.sector_id}/{locker_id}/cmd"
+            now_ms = int(time.time() * 1000)
 
             self._mqtt_client.publish_json(
-                topic=f"droplock/{self._device_context.sector_id}/{locker_id}/cmd",
+                topic=topic,
                 payload={
                     "schemaVersion": 1,
                     "type": "OPEN",
                     "requestId": f"admin_{cmd_id}",
-                    "ts": int(time.time() * 1000),
+                    "ts": now_ms,
                     "sectorId": self._device_context.sector_id,
                     "lockerId": locker_id,
-                    "actorUid": str(payload.get("actorUid") or "admin"),
-                    "bookingId": active_booking_id or f"admin_{cmd_id}",
-                    "tokenId": f"admin_{cmd_id}",
+                    "actorUid": actor_uid,
+                    "bookingId": booking_id,
+                    "tokenId": token_id,
                 },
             )
-            logger.info("Dispatched admin OPEN cmd_id=%s locker_id=%s", cmd_id, locker_id)
+            self._mqtt_client.publish_json(
+                topic=topic,
+                payload={
+                    "schemaVersion": 1,
+                    "type": "CLOSE",
+                    "requestId": f"admin_{cmd_id}_close",
+                    "ts": now_ms,
+                    "sectorId": self._device_context.sector_id,
+                    "lockerId": locker_id,
+                    "actorUid": actor_uid,
+                    "bookingId": booking_id,
+                    "tokenId": token_id,
+                },
+            )
+            logger.info("Dispatched admin OPEN+CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
             admin_cmd_key = (locker_id, cmd_id)
             self._admin_open_pending_ack.add(admin_cmd_key)
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)

@@ -332,10 +332,15 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         orchestrator._execute_admin_open(locker_id="L3", cmd_id="cmd123", payload={"actorUid": "admin-1"})
 
-        self.assertEqual(len(mqtt.published), 1)
+        self.assertEqual(len(mqtt.published), 2)
         self.assertEqual(mqtt.published[0][0], "droplock/S1/L3/cmd")
+        self.assertEqual(mqtt.published[0][1]["type"], "OPEN")
+        self.assertEqual(mqtt.published[1][0], "droplock/S1/L3/cmd")
+        self.assertEqual(mqtt.published[1][1]["type"], "CLOSE")
         self.assertEqual(mqtt.published[0][1]["bookingId"], "b-1")
         self.assertEqual(mqtt.published[0][1]["tokenId"], "admin_cmd123")
+        self.assertEqual(mqtt.published[1][1]["bookingId"], "b-1")
+        self.assertEqual(mqtt.published[1][1]["tokenId"], "admin_cmd123")
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
     def test_admin_open_is_still_dispatched_when_booking_is_pending(self):
@@ -355,8 +360,10 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         orchestrator._execute_admin_open(locker_id="L3", cmd_id="cmd123", payload={"actorUid": "admin-1"})
 
-        self.assertEqual(len(mqtt.published), 1)
+        self.assertEqual(len(mqtt.published), 2)
         self.assertEqual(mqtt.published[0][0], "droplock/S1/L3/cmd")
+        self.assertEqual(mqtt.published[0][1]["type"], "OPEN")
+        self.assertEqual(mqtt.published[1][1]["type"], "CLOSE")
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
     def test_admin_commands_are_ignored_while_qr_flow_is_active(self):
@@ -433,7 +440,7 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         self.assertTrue(first_did_work)
         self.assertTrue(second_did_work)
-        self.assertEqual(len(mqtt.published), 1)
+        self.assertEqual(len(mqtt.published), 2)
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
 

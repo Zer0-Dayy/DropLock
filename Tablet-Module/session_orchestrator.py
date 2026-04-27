@@ -520,6 +520,7 @@ class SessionOrchestrator:
                         )
                     else:
                         self._admin_open_pending_ack.discard(admin_cmd_key)
+                        self._admin_close_retry_payloads.pop(admin_cmd_key, None)
                     return True
                 if admin_cmd_key in self._admin_close_retry_payloads:
                     topic, close_payload = self._admin_close_retry_payloads[admin_cmd_key]

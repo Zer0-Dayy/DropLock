@@ -395,37 +395,52 @@ def admin_mgmt_page(uid: str, role: str, sectors: dict[str, Any]) -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
 
-def activity_page(role: str, sector_id: str | None) -> None:
-    hero("🧾 Activity Feed", "Recent admin command traffic and locker events for quick auditing.")
+def activity_page(uid: str, role: str, sector_id: str | None) -> None:
+    hero("🧾 Activity Feed", "Recent admin OPEN command execution logs for quick auditing.")
     init_firebase()
 
     command_rows: list[dict[str, Any]] = []
     profiles = db.reference("profiles").get() or {}
     name_map = {pid: (pdata or {}).get("displayName") or pid for pid, pdata in profiles.items()}
-    command_tree = db.reference("adminCommands").get() or {}
+    command_tree = db.reference("adminCommandLogs").get() or {}
     for cmd_sector, lockers in command_tree.items():
         if role == "admin" and sector_id and cmd_sector != sector_id:
             continue
         for locker_id, commands in (lockers or {}).items():
             for cmd_id, payload in (commands or {}).items():
                 safe = payload or {}
+                if safe.get("cmd") != "OPEN":
+                    continue
+                actor_uid = safe.get("actorUid")
+                if role == "admin" and actor_uid != uid:
+                    continue
                 command_rows.append(
                     {
                         "sector": cmd_sector,
                         "locker": locker_id,
+                        "status": safe.get("status"),
                         "cmd": safe.get("cmd"),
-                        "actor": name_map.get(safe.get("actorUid"), safe.get("actorUid")),
-                        "ts": safe.get("ts"),
+                        "actor": name_map.get(actor_uid, actor_uid),
+                        "actorUid": actor_uid,
+                        "requestedAt": format_ts(safe.get("requestedAt")),
+                        "executedAt": format_ts(safe.get("executedAt")),
+                        "_requestedAtMs": safe.get("requestedAt"),
+                        "bookingId": safe.get("bookingId"),
                         "id": cmd_id,
                     }
                 )
 
     if command_rows:
-        command_rows = sorted(command_rows, key=lambda c: c.get("ts") or 0, reverse=True)[:30]
-        st.markdown("#### Latest admin commands")
+        command_rows = sorted(command_rows, key=lambda c: c.get("_requestedAtMs") or 0, reverse=True)[:50]
+        for row in command_rows:
+            row.pop("_requestedAtMs", None)
+        if role == "superAdmin":
+            st.markdown("#### Latest OPEN commands from all admins (including super admin)")
+        else:
+            st.markdown("#### Latest OPEN commands submitted by you")
         st.dataframe(command_rows, width="stretch")
     else:
-        st.info("No command history found")
+        st.info("No OPEN command execution logs found")
 
 
 
@@ -549,7 +564,7 @@ def dashboard() -> None:
     elif page == "Admin Management":
         admin_mgmt_page(uid, role, sectors)
     elif page == "Activity Feed":
-        activity_page(role, sector_id)
+        activity_page(uid, role, sector_id)
     elif page == "Account Settings":
         account_page(profile)
     elif page == "Improvement Ideas":

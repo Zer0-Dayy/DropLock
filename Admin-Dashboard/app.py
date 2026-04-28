@@ -399,19 +399,37 @@ def activity_page(uid: str, role: str, sector_id: str | None) -> None:
     hero("🧾 Activity Feed", "Recent admin OPEN command execution logs for quick auditing.")
     init_firebase()
 
+    def _safe_ms(value: Any) -> int | None:
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return None
+
     command_rows: list[dict[str, Any]] = []
-    profiles = db.reference("profiles").get() or {}
+    profiles_raw = db.reference("profiles").get() or {}
+    profiles = profiles_raw if isinstance(profiles_raw, dict) else {}
     name_map = {pid: (pdata or {}).get("displayName") or pid for pid, pdata in profiles.items()}
-    command_tree = db.reference("adminCommandLogs").get() or {}
+
+    command_tree_raw = db.reference("adminCommandLogs").get() or {}
+    command_tree = command_tree_raw if isinstance(command_tree_raw, dict) else {}
     for cmd_sector, lockers in command_tree.items():
         if role == "admin" and sector_id and cmd_sector != sector_id:
             continue
-        for locker_id, commands in (lockers or {}).items():
-            for cmd_id, payload in (commands or {}).items():
+        if not isinstance(lockers, dict):
+            continue
+        for locker_id, commands in lockers.items():
+            if not isinstance(commands, dict):
+                continue
+            for cmd_id, payload in commands.items():
                 safe = payload or {}
+                if not isinstance(safe, dict):
+                    continue
                 if safe.get("cmd") != "OPEN":
                     continue
                 actor_uid = safe.get("actorUid")
+                requested_at_ms = _safe_ms(safe.get("requestedAt"))
+                executed_at_ms = _safe_ms(safe.get("executedAt"))
                 if role == "admin" and actor_uid != uid:
                     continue
                 command_rows.append(
@@ -422,9 +440,9 @@ def activity_page(uid: str, role: str, sector_id: str | None) -> None:
                         "cmd": safe.get("cmd"),
                         "actor": name_map.get(actor_uid, actor_uid),
                         "actorUid": actor_uid,
-                        "requestedAt": format_ts(safe.get("requestedAt")),
-                        "executedAt": format_ts(safe.get("executedAt")),
-                        "_requestedAtMs": safe.get("requestedAt"),
+                        "requestedAt": format_ts(requested_at_ms),
+                        "executedAt": format_ts(executed_at_ms),
+                        "_requestedAtMs": requested_at_ms,
                         "bookingId": safe.get("bookingId"),
                         "id": cmd_id,
                     }

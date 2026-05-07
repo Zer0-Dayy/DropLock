@@ -17,7 +17,7 @@ from admin_init import init_firebase, verify_id_token
 from admin_ops import assert_super_admin, get_profile
 from alert_service import AlertService
 from authentication import change_password, sign_in
-from locker_actions import admin_request_open, admin_set_state, super_create_locker, super_delete_locker
+from locker_actions import admin_request_cancel, admin_request_open, admin_set_state, super_create_locker, super_delete_locker
 from locker_repo import create_sector, load_all_sectors, load_lockers, update_sector_config
 from metrics import LOCKER_STATES, DEFAULT_HEARTBEAT_TIMEOUT_SEC, LockerView, build_locker_view, compute_sector_metrics
 from ui_components import format_state, format_ts, hero, inject_global_styles, render_metrics, tamper_badge
@@ -301,7 +301,7 @@ def operations_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str
             label_visibility="collapsed",
         )
 
-        action_cols = st.columns([1, 1, 4])
+        action_cols = st.columns([1, 1, 1, 3])
         if action_cols[0].button("Apply", key=f"apply_{locker.locker_id}"):
             admin_set_state(uid, effective_sector_id, locker.locker_id, new_state)
             st.success(f"{locker.locker_id} updated")
@@ -309,6 +309,10 @@ def operations_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str
         if action_cols[1].button("OPEN", key=f"open_{locker.locker_id}"):
             cmd_id = admin_request_open(uid, effective_sector_id, locker.locker_id)
             st.success(f"OPEN requested ({cmd_id})")
+        cancel_disabled = not locker.active_booking_id
+        if action_cols[2].button("CANCEL", key=f"cancel_{locker.locker_id}", disabled=cancel_disabled):
+            cmd_id = admin_request_cancel(uid, effective_sector_id, locker.locker_id)
+            st.success(f"CANCEL requested ({cmd_id})")
         st.markdown("</div>", unsafe_allow_html=True)
 
     st.download_button("Export CSV", csv_buffer.getvalue(), file_name=f"lockers_{effective_sector_id}.csv", mime="text/csv")
@@ -396,7 +400,7 @@ def admin_mgmt_page(uid: str, role: str, sectors: dict[str, Any]) -> None:
 
 
 def activity_page(uid: str, role: str, sector_id: str | None) -> None:
-    hero("🧾 Activity Feed", "Recent admin OPEN command execution logs for quick auditing.")
+    hero("🧾 Activity Feed", "Recent admin command execution logs for quick auditing.")
     init_firebase()
 
     def _safe_ms(value: Any) -> int | None:
@@ -425,7 +429,7 @@ def activity_page(uid: str, role: str, sector_id: str | None) -> None:
                 safe = payload or {}
                 if not isinstance(safe, dict):
                     continue
-                if safe.get("cmd") != "OPEN":
+                if safe.get("cmd") not in {"OPEN", "CANCEL"}:
                     continue
                 actor_uid = safe.get("actorUid")
                 requested_at_ms = _safe_ms(safe.get("requestedAt"))
@@ -453,12 +457,12 @@ def activity_page(uid: str, role: str, sector_id: str | None) -> None:
         for row in command_rows:
             row.pop("_requestedAtMs", None)
         if role == "superAdmin":
-            st.markdown("#### Latest OPEN commands from all admins (including super admin)")
+            st.markdown("#### Latest admin commands from all admins (including super admin)")
         else:
-            st.markdown("#### Latest OPEN commands submitted by you")
+            st.markdown("#### Latest admin commands submitted by you")
         st.dataframe(command_rows, width="stretch")
     else:
-        st.info("No OPEN command execution logs found")
+        st.info("No admin command execution logs found")
 
 
 

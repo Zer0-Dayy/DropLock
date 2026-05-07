@@ -561,12 +561,31 @@ class SessionOrchestrator:
                     continue
                 admin_cmd_key = (locker_id, cmd_id)
                 if self._active_session is not None:
-                    if isinstance(payload, dict) and str(payload.get("cmd") or "").upper() == "CANCEL":
-                        return self._process_admin_command_during_active_session(
-                            locker_id=locker_id,
-                            cmd_id=cmd_id,
-                            payload=payload,
-                        )
+                    if isinstance(payload, dict):
+                        cmd = str(payload.get("cmd") or "").upper()
+                        if cmd == "CANCEL":
+                            return self._process_admin_command_during_active_session(
+                                locker_id=locker_id,
+                                cmd_id=cmd_id,
+                                payload=payload,
+                            )
+                        if cmd == "OPEN" and locker_id == self._active_session.locker_id:
+                            actor_uid = str(payload.get("actorUid") or "admin")
+                            acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+                            self._log_admin_command_execution(
+                                locker_id=locker_id,
+                                cmd_id=cmd_id,
+                                payload=payload,
+                                status="IGNORED_OPEN_ACTIVE_LOCKER",
+                                actor_uid=actor_uid,
+                                booking_id=getattr(self._active_session, "booking_id", None),
+                                token_id=getattr(self._active_session, "token_id", None),
+                                close_request_id=getattr(self._active_session, "request_id", None),
+                                close_dispatched=False,
+                                acked=acked,
+                                error="LOCKER_HAS_ACTIVE_TRANSACTION",
+                            )
+                            return True
                     continue
                 if admin_cmd_key in self._admin_open_pending_ack:
                     try:

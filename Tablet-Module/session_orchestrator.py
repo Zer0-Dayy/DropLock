@@ -561,11 +561,13 @@ class SessionOrchestrator:
                     continue
                 admin_cmd_key = (locker_id, cmd_id)
                 if self._active_session is not None:
-                    return self._process_admin_command_during_active_session(
-                        locker_id=locker_id,
-                        cmd_id=cmd_id,
-                        payload=payload,
-                    )
+                    if isinstance(payload, dict) and str(payload.get("cmd") or "").upper() == "CANCEL":
+                        return self._process_admin_command_during_active_session(
+                            locker_id=locker_id,
+                            cmd_id=cmd_id,
+                            payload=payload,
+                        )
+                    continue
                 if admin_cmd_key in self._admin_open_pending_ack:
                     try:
                         self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
@@ -633,15 +635,7 @@ class SessionOrchestrator:
         payload: Any,
     ) -> bool:
         if not isinstance(payload, dict):
-            acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
-            self._log_admin_command_execution(
-                locker_id=locker_id,
-                cmd_id=cmd_id,
-                payload={},
-                status="IGNORED_INVALID_PAYLOAD",
-                acked=acked,
-            )
-            return True
+            return False
 
         cmd = str(payload.get("cmd") or "").upper()
         actor_uid = str(payload.get("actorUid") or "admin")
@@ -676,17 +670,7 @@ class SessionOrchestrator:
             )
             return True
 
-        status = "IGNORED_ACTIVE_TRANSACTION" if cmd in {"OPEN", "CLOSE"} else "IGNORED_UNSUPPORTED_CMD"
-        acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
-        self._log_admin_command_execution(
-            locker_id=locker_id,
-            cmd_id=cmd_id,
-            payload=payload,
-            status=status,
-            actor_uid=actor_uid,
-            acked=acked,
-        )
-        return True
+        return False
 
     def _execute_admin_open(self, *, locker_id: str, cmd_id: str, payload: dict[str, Any]) -> None:
         admin_cmd_key = (locker_id, cmd_id)

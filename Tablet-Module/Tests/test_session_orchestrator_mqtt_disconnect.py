@@ -392,8 +392,9 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertEqual(mqtt.published[1][1]["type"], "CLOSE")
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
-    def test_admin_open_is_ignored_while_qr_flow_is_active(self):
+    def test_admin_open_stays_pending_while_qr_flow_is_active(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")
+        repo.commands = {"L9": {"cmd123": {"cmd": "OPEN", "actorUid": "admin-1"}}}
         mqtt = _MQTTAdmin()
         mqtt.gate.set()
         orchestrator = SessionOrchestrator(
@@ -411,11 +412,26 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
 
         did_work = orchestrator._process_next_admin_command()
 
-        self.assertTrue(did_work)
+        self.assertFalse(did_work)
         self.assertEqual(repo.reads, 1)
         self.assertEqual(mqtt.published, [])
-        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
-        self.assertEqual(repo.logged[0]["status"], "IGNORED_ACTIVE_TRANSACTION")
+        self.assertEqual(repo.deleted, [])
+        self.assertEqual(repo.logged, [])
+        self.assertIn("cmd123", repo.commands["L9"])
+
+        orchestrator._active_session = None
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(did_work)
+        for _ in range(20):
+            if repo.deleted:
+                break
+            time.sleep(0.01)
+        self.assertEqual(mqtt.published[0][0], "droplock/S1/L9/cmd")
+        self.assertEqual(mqtt.published[0][1]["type"], "OPEN")
+        self.assertEqual(repo.deleted, [("S1", "L9", "cmd123")])
 
     def test_admin_cancel_closes_active_qr_flow(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")

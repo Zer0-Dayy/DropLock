@@ -572,6 +572,10 @@ class SessionOrchestrator:
                         if cmd == "OPEN" and locker_id == self._active_session.locker_id:
                             actor_uid = str(payload.get("actorUid") or "admin")
                             acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+                            if acked:
+                                self._admin_open_pending_ack.discard(admin_cmd_key)
+                            else:
+                                self._admin_open_pending_ack.add(admin_cmd_key)
                             self._log_admin_command_execution(
                                 locker_id=locker_id,
                                 cmd_id=cmd_id,

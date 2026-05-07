@@ -601,6 +601,45 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertEqual(len(mqtt.published), 2)
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
+    def test_same_locker_admin_open_delete_failure_is_pending_ack_not_reopened(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED", fail_delete_attempts=1)
+        mqtt = _MQTTAdmin()
+        mqtt.gate.set()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            admin_command_poll_interval_s=0.1,
+        )
+        orchestrator._active_session = LockerSession(
+            request_id="qr-req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="L3",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.WAITING_FOR_SIGNATURE,
+        )
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        active_did_work = orchestrator._process_next_admin_command()
+        orchestrator._active_session = None
+        orchestrator._admin_command_last_poll_mono = 0.0
+        retry_did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(active_did_work)
+        self.assertTrue(retry_did_work)
+        self.assertEqual(mqtt.published, [])
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
+        self.assertNotIn(("L3", "cmd123"), orchestrator._admin_open_pending_ack)
+        self.assertEqual(repo.logged[0]["status"], "IGNORED_OPEN_ACTIVE_LOCKER")
+        self.assertFalse(repo.logged[0]["acked"])
+
     def test_admin_open_clears_close_retry_payload_after_pending_ack_retry_succeeds(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED", fail_delete_attempts=1)
         mqtt = _MQTTAdminFailCloseOnce()

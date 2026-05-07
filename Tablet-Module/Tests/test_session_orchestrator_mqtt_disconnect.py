@@ -277,6 +277,7 @@ class _RepoAdminCommands:
         self.booking_status = booking_status
         self.fail_delete_attempts = fail_delete_attempts
         self.deleted = []
+        self.logged = []
         self.reads = 0
         self.commands = {
             "L3": {
@@ -302,6 +303,12 @@ class _RepoAdminCommands:
         locker_cmds = self.commands.get(locker_id) or {}
         locker_cmds.pop(cmd_id, None)
 
+    def append_booking_event(self, **kwargs):
+        return "evt-1"
+
+    def log_admin_command_execution(self, **kwargs):
+        self.logged.append(kwargs)
+
 
 class _MQTTAdmin:
     def __init__(self):
@@ -311,6 +318,9 @@ class _MQTTAdmin:
     def publish_json(self, *, topic: str, payload: dict):
         self.gate.wait(timeout=1.0)
         self.published.append((topic, payload))
+
+    def publish_close(self, **kwargs):
+        self.published.append(("publish_close", kwargs))
 
 
 class _MQTTAdminFailCloseOnce(_MQTTAdmin):
@@ -324,6 +334,9 @@ class _MQTTAdminFailCloseOnce(_MQTTAdmin):
         if payload.get("type") == "CLOSE" and self.close_failures_remaining > 0:
             self.close_failures_remaining -= 1
             raise RuntimeError("close publish failed")
+
+    def publish_close(self, **kwargs):
+        self.published.append(("publish_close", kwargs))
 
 
 class SessionOrchestratorAdminOpenTests(unittest.TestCase):
@@ -379,7 +392,7 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertEqual(mqtt.published[1][1]["type"], "CLOSE")
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
-    def test_admin_commands_are_ignored_while_qr_flow_is_active(self):
+    def test_admin_open_is_ignored_while_qr_flow_is_active(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")
         mqtt = _MQTTAdmin()
         mqtt.gate.set()
@@ -393,15 +406,82 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
             signature_capture=SimpleNamespace(),
             close_gates=CloseGates(),
         )
-        orchestrator._active_session = SimpleNamespace()
+        orchestrator._active_session = SimpleNamespace(locker_id="L3")
         orchestrator._admin_command_last_poll_mono = 0.0
 
         did_work = orchestrator._process_next_admin_command()
 
-        self.assertFalse(did_work)
-        self.assertEqual(repo.reads, 0)
+        self.assertTrue(did_work)
+        self.assertEqual(repo.reads, 1)
         self.assertEqual(mqtt.published, [])
-        self.assertEqual(repo.deleted, [])
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
+        self.assertEqual(repo.logged[0]["status"], "IGNORED_ACTIVE_TRANSACTION")
+
+    def test_admin_cancel_closes_active_qr_flow(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED")
+        repo.commands = {"L3": {"cmd-cancel": {"cmd": "CANCEL", "actorUid": "admin-1"}}}
+        mqtt = _MQTTAdmin()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+        )
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="L3",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.WAITING_FOR_SIGNATURE,
+        )
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(did_work)
+        self.assertEqual(mqtt.published[0][0], "publish_close")
+        self.assertEqual(orchestrator._active_session.phase, SessionPhase.CLOSING)
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd-cancel")])
+        self.assertEqual(repo.logged[0]["status"], "CANCELLED_ACTIVE_TRANSACTION")
+
+    def test_admin_cancel_for_another_locker_does_not_close_active_qr_flow(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED")
+        repo.commands = {"L9": {"cmd-cancel": {"cmd": "CANCEL", "actorUid": "admin-1"}}}
+        mqtt = _MQTTAdmin()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+        )
+        orchestrator._active_session = LockerSession(
+            request_id="req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="L3",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.WAITING_FOR_SIGNATURE,
+        )
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(did_work)
+        self.assertEqual(mqtt.published, [])
+        self.assertEqual(orchestrator._active_session.phase, SessionPhase.WAITING_FOR_SIGNATURE)
+        self.assertEqual(repo.deleted, [("S1", "L9", "cmd-cancel")])
+        self.assertEqual(repo.logged[0]["status"], "IGNORED_CANCEL_WRONG_LOCKER")
 
     def test_admin_command_processing_is_non_blocking(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")

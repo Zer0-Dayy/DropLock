@@ -7,7 +7,7 @@ import os
 from admin_ops import assert_can_admin, assert_super_admin, get_profile
 from alert_service import AlertService
 from booking_audit import append_booking_event
-from commands import push_admin_open_command
+from commands import push_admin_cancel_command, push_admin_open_command
 from locker_repo import append_locker_event, create_locker, delete_locker, get_locker, set_locker_state
 
 ALERTS = AlertService()
@@ -95,6 +95,41 @@ def admin_request_open(actor_uid: str, sector_id: str, locker_id: str, reason: s
                 booking_id=booking_id,
             )
             append_locker_event(sector_id, locker_id, "FORCED_OPEN", actor_uid, locker, get_locker(sector_id, locker_id) or {})
+
+    return cmd_id
+
+
+def admin_request_cancel(actor_uid: str, sector_id: str, locker_id: str, reason: str = "") -> str:
+    assert_can_admin(actor_uid, sector_id)
+
+    locker = get_locker(sector_id, locker_id) or {}
+    state = locker.get("state")
+    booking_id = locker.get("activeBookingId")
+
+    cmd_id = push_admin_cancel_command(sector_id, locker_id, actor_uid, reason=reason)
+    append_locker_event(
+        sector_id,
+        locker_id,
+        "ADMIN_CANCEL_TRANSACTION",
+        actor_uid,
+        {"state": state, "bookingId": booking_id},
+        {"cmdId": cmd_id, "reason": reason},
+    )
+
+    if booking_id:
+        append_booking_event(
+            booking_id=booking_id,
+            event_type="SESSION_CANCEL_REQUESTED",
+            actor_uid=actor_uid,
+            data={
+                "source": "ADMIN_DASHBOARD",
+                "cmdId": cmd_id,
+                "lockerId": locker_id,
+                "sectorId": sector_id,
+                "reason": reason,
+                "lockerState": state,
+            },
+        )
 
     return cmd_id
 

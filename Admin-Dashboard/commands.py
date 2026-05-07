@@ -14,3 +14,14 @@ def push_admin_open_command(sector_id: str, locker_id: str, actor_uid: str) -> s
         "ts": now_ms(),
     })
     return ref.key  # push id
+
+
+def push_admin_cancel_command(sector_id: str, locker_id: str, actor_uid: str, reason: str = "") -> str:
+    init_firebase()
+    ref = db.reference(f"adminCommands/{sector_id}/{locker_id}").push({
+        "cmd": "CANCEL",
+        "actorUid": actor_uid,
+        "reason": reason,
+        "ts": now_ms(),
+    })
+    return ref.key  # push id

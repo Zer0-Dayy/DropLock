@@ -77,6 +77,7 @@ class SessionOrchestrator:
         self._active_validation: ValidationResult | None = None
         self._active_open_sent_mono: float | None = None
         self._active_close_sent_mono: float | None = None
+        self._active_cancel_close_pending = False
 
         self._locker_door_closed: dict[str, bool] = {}
         self._tamper_alert_active: dict[str, bool] = {}
@@ -187,9 +188,7 @@ class SessionOrchestrator:
             self._show_error_ui("Cancellation is unavailable while controller commands are in flight.")
             return True
 
-        self._append_booking_event("SESSION_CANCELLED", {"phase": self._active_session.phase.value})
-        self._show_operation_cancelled_ui()
-        self._clear_active_session(show_idle=False)
+        self._cancel_active_session(source="TABLET_BUTTON")
         return True
 
     def _route_event(self, event: ControllerEvent) -> None:
@@ -322,8 +321,7 @@ class SessionOrchestrator:
 
         if not signature.captured or not signature.valid:
             if signature.validation_reason == "SIGNATURE_CAPTURE_CANCELLED":
-                self._show_operation_cancelled_ui()
-                self._clear_active_session(show_idle=False)
+                self._cancel_active_session(source="SIGNATURE_CAPTURE")
                 return
             self._show_signature_failed_ui(signature.validation_reason)
             return
@@ -372,6 +370,50 @@ class SessionOrchestrator:
 
         self._active_close_sent_mono = time.monotonic()
 
+    def _cancel_active_session(self, *, source: str, actor_uid: str | None = None) -> bool:
+        if self._active_session is None:
+            return False
+
+        if self._active_session.phase in (SessionPhase.UNLOCKING, SessionPhase.CLOSING):
+            self._show_error_ui("Cancellation is unavailable while controller commands are in flight.")
+            return False
+
+        session_before_close = self._active_session
+        try:
+            self._publish_close(session_before_close)
+        except Exception as exc:
+            logger.warning(
+                "Failed to publish cancellation CLOSE request_id=%s locker_id=%s: %s",
+                session_before_close.request_id,
+                session_before_close.locker_id,
+                exc,
+            )
+            self._active_close_sent_mono = None
+            self._show_error_ui("Controller offline while cancelling. Please retry cancellation.")
+            return False
+
+        try:
+            self._append_booking_event(
+                "SESSION_CANCELLED",
+                {
+                    "phase": session_before_close.phase.value,
+                    "source": source,
+                    "actorUid": actor_uid or self._device_context.device_uid,
+                    "closeRequestId": session_before_close.request_id,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "Failed to append cancellation event booking_id=%s locker_id=%s",
+                session_before_close.booking_id,
+                session_before_close.locker_id,
+            )
+        self._active_cancel_close_pending = True
+        self._active_session = replace(session_before_close, phase=SessionPhase.CLOSING)
+        self._active_close_sent_mono = time.monotonic()
+        self._show_operation_cancelled_ui()
+        return True
+
     def _persist_weight_update_async(
         self,
         *,
@@ -397,6 +439,18 @@ class SessionOrchestrator:
 
     def _on_close_ack(self, event: ControllerEvent) -> None:
         assert self._active_session is not None
+
+        if self._active_cancel_close_pending:
+            try:
+                self._append_booking_event("SESSION_CANCEL_CLOSE_ACK", {"requestId": self._active_session.request_id})
+            except Exception:
+                logger.exception(
+                    "Failed to append cancellation CLOSE ack event booking_id=%s locker_id=%s",
+                    self._active_session.booking_id,
+                    self._active_session.locker_id,
+                )
+            self._clear_active_session(show_idle=False)
+            return
 
         purpose = self._purpose()
         if not self._mark_active_token_used():
@@ -478,7 +532,8 @@ class SessionOrchestrator:
                 return True
         if self._active_session.phase == SessionPhase.CLOSING and self._active_close_sent_mono is not None:
             if now - self._active_close_sent_mono > self._close_ack_timeout_s:
-                self._mark_active_token_used()
+                if not self._active_cancel_close_pending:
+                    self._mark_active_token_used()
                 self._fail_active_session("CLOSE_ACK_TIMEOUT")
                 return True
         return False
@@ -488,10 +543,6 @@ class SessionOrchestrator:
         if now_mono - self._admin_command_last_poll_mono < self._admin_command_poll_interval_s:
             return False
         self._admin_command_last_poll_mono = now_mono
-
-        if self._active_session is not None:
-            logger.debug("Skipping admin command polling while locker flow is active")
-            return False
 
         try:
             sector_commands = self._firebase_repo.get_admin_commands(self._device_context.sector_id)
@@ -509,6 +560,12 @@ class SessionOrchestrator:
                 if locker_id in self._admin_open_in_flight:
                     continue
                 admin_cmd_key = (locker_id, cmd_id)
+                if self._active_session is not None:
+                    return self._process_admin_command_during_active_session(
+                        locker_id=locker_id,
+                        cmd_id=cmd_id,
+                        payload=payload,
+                    )
                 if admin_cmd_key in self._admin_open_pending_ack:
                     try:
                         self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
@@ -567,6 +624,69 @@ class SessionOrchestrator:
                 ).start()
                 return True
         return False
+
+    def _process_admin_command_during_active_session(
+        self,
+        *,
+        locker_id: str,
+        cmd_id: str,
+        payload: Any,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+            self._log_admin_command_execution(
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                payload={},
+                status="IGNORED_INVALID_PAYLOAD",
+                acked=acked,
+            )
+            return True
+
+        cmd = str(payload.get("cmd") or "").upper()
+        actor_uid = str(payload.get("actorUid") or "admin")
+
+        if cmd == "CANCEL":
+            if locker_id != self._active_session.locker_id:
+                acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+                self._log_admin_command_execution(
+                    locker_id=locker_id,
+                    cmd_id=cmd_id,
+                    payload=payload,
+                    status="IGNORED_CANCEL_WRONG_LOCKER",
+                    actor_uid=actor_uid,
+                    acked=acked,
+                )
+                return True
+
+            cancelled = self._cancel_active_session(source="ADMIN_DASHBOARD", actor_uid=actor_uid)
+            acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id) if cancelled else False
+            self._log_admin_command_execution(
+                locker_id=locker_id,
+                cmd_id=cmd_id,
+                payload=payload,
+                status="CANCELLED_ACTIVE_TRANSACTION" if cancelled else "CANCEL_FAILED",
+                actor_uid=actor_uid,
+                booking_id=self._active_session.booking_id if self._active_session else None,
+                token_id=self._active_session.token_id if self._active_session else None,
+                close_request_id=self._active_session.request_id if self._active_session else None,
+                close_dispatched=cancelled,
+                acked=acked,
+                error=None if cancelled else "CANCEL_CLOSE_DISPATCH_FAILED",
+            )
+            return True
+
+        status = "IGNORED_ACTIVE_TRANSACTION" if cmd in {"OPEN", "CLOSE"} else "IGNORED_UNSUPPORTED_CMD"
+        acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
+        self._log_admin_command_execution(
+            locker_id=locker_id,
+            cmd_id=cmd_id,
+            payload=payload,
+            status=status,
+            actor_uid=actor_uid,
+            acked=acked,
+        )
+        return True
 
     def _execute_admin_open(self, *, locker_id: str, cmd_id: str, payload: dict[str, Any]) -> None:
         admin_cmd_key = (locker_id, cmd_id)
@@ -846,6 +966,7 @@ class SessionOrchestrator:
         self._active_validation = None
         self._active_open_sent_mono = None
         self._active_close_sent_mono = None
+        self._active_cancel_close_pending = False
         if show_idle:
             self._show_idle_ui()
 

@@ -685,6 +685,71 @@ class SessionOrchestratorAdminOpenTests(unittest.TestCase):
         self.assertNotIn(("L3", "cmd123"), orchestrator._admin_close_retry_payloads)
         self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
 
+
+    def test_admin_close_retry_survives_active_qr_pending_ack_collision(self):
+        repo = _RepoAdminCommands(booking_status="COMPLETED", fail_delete_attempts=1)
+        mqtt = _MQTTAdminFailCloseOnce()
+        mqtt.gate.set()
+        orchestrator = SessionOrchestrator(
+            device_context=SimpleNamespace(device_uid="dev-1", sector_id="S1"),
+            scanner_input=SimpleNamespace(),
+            access_validator=SimpleNamespace(),
+            mqtt_client=mqtt,
+            controller_event_parser=SimpleNamespace(),
+            firebase_repo=repo,
+            signature_capture=SimpleNamespace(),
+            close_gates=CloseGates(),
+            admin_command_poll_interval_s=0.1,
+        )
+        admin_cmd_key = ("L3", "cmd123")
+        orchestrator._admin_command_last_poll_mono = 0.0
+
+        first_did_work = orchestrator._process_next_admin_command()
+        for _ in range(20):
+            if admin_cmd_key in orchestrator._admin_close_retry_payloads and "L3" not in orchestrator._admin_open_in_flight:
+                break
+            time.sleep(0.01)
+
+        orchestrator._active_session = LockerSession(
+            request_id="qr-req-1",
+            token_id="tok-1",
+            booking_id="book-1",
+            locker_id="L3",
+            sector_id="S1",
+            device_uid="dev-1",
+            phase=SessionPhase.WAITING_FOR_SIGNATURE,
+        )
+        orchestrator._admin_open_pending_ack.add(admin_cmd_key)
+        orchestrator._admin_command_last_poll_mono = 0.0
+        active_did_work = orchestrator._process_next_admin_command()
+
+        orchestrator._active_session = None
+        orchestrator._admin_command_last_poll_mono = 0.0
+        retry_did_work = orchestrator._process_next_admin_command()
+        for _ in range(20):
+            if admin_cmd_key in orchestrator._admin_close_retry_dispatched and "L3" not in orchestrator._admin_open_in_flight:
+                break
+            time.sleep(0.01)
+
+        close_publishes = [payload for _, payload in mqtt.published if payload.get("type") == "CLOSE"]
+        self.assertTrue(first_did_work)
+        self.assertFalse(active_did_work)
+        self.assertTrue(retry_did_work)
+        self.assertEqual(len(close_publishes), 2)
+        self.assertIn(admin_cmd_key, orchestrator._admin_close_retry_payloads)
+        self.assertIn(admin_cmd_key, orchestrator._admin_open_pending_ack)
+        self.assertIn(admin_cmd_key, orchestrator._admin_close_retry_dispatched)
+        self.assertEqual(repo.deleted, [])
+
+        orchestrator._admin_command_last_poll_mono = 0.0
+        ack_did_work = orchestrator._process_next_admin_command()
+
+        self.assertTrue(ack_did_work)
+        self.assertEqual(repo.deleted, [("S1", "L3", "cmd123")])
+        self.assertNotIn(admin_cmd_key, orchestrator._admin_open_pending_ack)
+        self.assertNotIn(admin_cmd_key, orchestrator._admin_close_retry_payloads)
+        self.assertNotIn(admin_cmd_key, orchestrator._admin_close_retry_dispatched)
+
     def test_admin_open_retries_close_without_republishing_open(self):
         repo = _RepoAdminCommands(booking_status="COMPLETED")
         mqtt = _MQTTAdminFailCloseOnce()

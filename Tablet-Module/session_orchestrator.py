@@ -85,6 +85,7 @@ class SessionOrchestrator:
         self._admin_open_in_flight: set[str] = set()
         self._admin_open_pending_ack: set[tuple[str, str]] = set()
         self._admin_close_retry_payloads: dict[tuple[str, str], tuple[str, dict[str, Any], dict[str, Any]]] = {}
+        self._admin_close_retry_dispatched: set[tuple[str, str]] = set()
 
     def run_forever(self) -> None:
         self.start()
@@ -560,6 +561,27 @@ class SessionOrchestrator:
                 if locker_id in self._admin_open_in_flight:
                     continue
                 admin_cmd_key = (locker_id, cmd_id)
+                if (
+                    admin_cmd_key in self._admin_open_pending_ack
+                    and (
+                        admin_cmd_key not in self._admin_close_retry_payloads
+                        or admin_cmd_key in self._admin_close_retry_dispatched
+                    )
+                ):
+                    try:
+                        self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
+                    except Exception:
+                        logger.exception(
+                            "Failed retrying admin command ack cmd_id=%s locker_id=%s",
+                            cmd_id,
+                            locker_id,
+                        )
+                    else:
+                        self._admin_open_pending_ack.discard(admin_cmd_key)
+                        if admin_cmd_key in self._admin_close_retry_dispatched:
+                            self._admin_close_retry_payloads.pop(admin_cmd_key, None)
+                            self._admin_close_retry_dispatched.discard(admin_cmd_key)
+                    return True
                 if self._active_session is not None:
                     if isinstance(payload, dict):
                         cmd = str(payload.get("cmd") or "").upper()
@@ -570,6 +592,11 @@ class SessionOrchestrator:
                                 payload=payload,
                             )
                         if cmd == "OPEN" and locker_id == self._active_session.locker_id:
+                            if (
+                                admin_cmd_key in self._admin_close_retry_payloads
+                                and admin_cmd_key not in self._admin_close_retry_dispatched
+                            ):
+                                continue
                             actor_uid = str(payload.get("actorUid") or "admin")
                             acked = self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id)
                             if acked:
@@ -591,19 +618,6 @@ class SessionOrchestrator:
                             )
                             return True
                     continue
-                if admin_cmd_key in self._admin_open_pending_ack:
-                    try:
-                        self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
-                    except Exception:
-                        logger.exception(
-                            "Failed retrying admin command ack cmd_id=%s locker_id=%s",
-                            cmd_id,
-                            locker_id,
-                        )
-                    else:
-                        self._admin_open_pending_ack.discard(admin_cmd_key)
-                        self._admin_close_retry_payloads.pop(admin_cmd_key, None)
-                    return True
                 if admin_cmd_key in self._admin_close_retry_payloads:
                     topic, close_payload, original_payload = self._admin_close_retry_payloads[admin_cmd_key]
                     self._admin_open_in_flight.add(locker_id)
@@ -740,6 +754,7 @@ class SessionOrchestrator:
                 )
             except Exception:
                 self._admin_close_retry_payloads[admin_cmd_key] = (topic, close_payload, payload)
+                self._admin_close_retry_dispatched.discard(admin_cmd_key)
                 self._log_admin_command_execution(
                     locker_id=locker_id,
                     cmd_id=cmd_id,
@@ -765,6 +780,7 @@ class SessionOrchestrator:
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
             self._admin_open_pending_ack.discard(admin_cmd_key)
             self._admin_close_retry_payloads.pop(admin_cmd_key, None)
+            self._admin_close_retry_dispatched.discard(admin_cmd_key)
             self._log_admin_command_execution(
                 locker_id=locker_id,
                 cmd_id=cmd_id,
@@ -803,11 +819,13 @@ class SessionOrchestrator:
         admin_cmd_key = (locker_id, cmd_id)
         try:
             self._mqtt_client.publish_json(topic=topic, payload=close_payload)
+            self._admin_close_retry_dispatched.add(admin_cmd_key)
             self._admin_open_pending_ack.add(admin_cmd_key)
             logger.info("Retried admin CLOSE cmd_id=%s locker_id=%s", cmd_id, locker_id)
             self._ack_admin_command(locker_id=locker_id, cmd_id=cmd_id, raise_on_error=True)
             self._admin_open_pending_ack.discard(admin_cmd_key)
             self._admin_close_retry_payloads.pop(admin_cmd_key, None)
+            self._admin_close_retry_dispatched.discard(admin_cmd_key)
             self._log_admin_command_execution(
                 locker_id=locker_id,
                 cmd_id=cmd_id,

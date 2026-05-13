@@ -1,0 +1,606 @@
+"""DropLock Streamlit admin dashboard."""
+
+from __future__ import annotations
+
+import csv
+import datetime as dt
+import io
+import logging
+import os
+from pathlib import Path
+from typing import Any
+
+import streamlit as st
+from firebase_admin import db
+
+from admin_init import init_firebase, verify_id_token
+from admin_ops import assert_super_admin, get_profile
+from alert_service import AlertService
+from authentication import change_password, sign_in
+from locker_actions import admin_request_cancel, admin_request_open, admin_set_state, super_create_locker, super_delete_locker
+from locker_repo import create_sector, load_all_sectors, load_lockers, update_sector_config
+from metrics import LOCKER_STATES, DEFAULT_HEARTBEAT_TIMEOUT_SEC, LockerView, build_locker_view, compute_sector_metrics
+from ui_components import format_state, format_ts, hero, inject_global_styles, render_metrics, tamper_badge
+from user_provisioning import list_admin_profiles, provision_admin, reset_admin_password, set_admin_status
+
+st.set_page_config(page_title="DropLock Admin", layout="wide")
+
+LOG_DIR = Path(__file__).resolve().parent / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    handlers=[logging.FileHandler(LOG_DIR / "admin_dashboard.log"), logging.StreamHandler()],
+)
+LOGGER = logging.getLogger(__name__)
+ALERTS = AlertService()
+
+
+def ensure_session() -> None:
+    st.session_state.setdefault("idToken", None)
+    st.session_state.setdefault("uid", None)
+    st.session_state.setdefault("profile", None)
+    st.session_state.setdefault("locker_signals", {})
+    st.session_state.setdefault("theme", "dark")
+
+
+def login_view() -> None:
+    hero("🔐 DropLock Admin Dashboard", "Secure operations center for lockers, sectors, alerts and admins.")
+    col1, col2 = st.columns([1.3, 1])
+    with col1:
+        st.markdown("### Welcome back")
+        st.write("Sign in to manage lockers, respond to incidents, and keep sectors healthy.")
+        st.image(
+            "logo.jpg",
+            caption="",
+            width="stretch",
+        )
+
+    with col2:
+        with st.form("login"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            ok = st.form_submit_button("Login")
+        if not ok:
+            return
+
+        try:
+            data = sign_in(email, password)
+            claims = verify_id_token(data["idToken"])
+            uid = claims["uid"]
+            profile = get_profile(uid)
+            if not profile:
+                st.error("No profile found in RTDB")
+                return
+            if profile.get("status") != "active":
+                st.error("Profile disabled")
+                return
+
+            st.session_state.idToken = data["idToken"]
+            st.session_state.uid = uid
+            st.session_state.profile = profile
+            st.rerun()
+        except Exception as exc:
+            st.error(str(exc))
+
+
+def _selected_sector(profile: dict[str, Any], sectors: dict[str, Any]) -> str | None:
+    role = profile.get("role")
+    if role == "admin":
+        return profile.get("sectorId")
+    if not sectors:
+        return None
+    return st.sidebar.selectbox("Sector", sorted(sectors.keys()))
+
+
+def _build_locker_views(sector_id: str, sectors: dict[str, Any]) -> list[LockerView]:
+    lockers = load_lockers(sector_id)
+    heartbeat_timeout = int((sectors.get(sector_id, {}).get("config") or {}).get("heartbeatTimeoutSec", DEFAULT_HEARTBEAT_TIMEOUT_SEC))
+    return [build_locker_view(locker_id, sector_id, data or {}, heartbeat_timeout) for locker_id, data in sorted(lockers.items())]
+
+
+def _trigger_derived_alerts(uid: str, locker_views: list[LockerView]) -> None:
+    recipient = os.getenv("DROPLOCK_ALERT_RECIPIENT") or (get_profile(uid) or {}).get("email")
+    for locker in locker_views:
+        signal_key = f"{locker.sector_id}:{locker.locker_id}"
+        prev = st.session_state.locker_signals.get(signal_key, {"tamper": False, "offline": False})
+
+        if locker.tamper_flag and not prev.get("tamper"):
+            alert_id = ALERTS.create_alert(
+                alert_type="TAMPER",
+                sector_id=locker.sector_id,
+                locker_id=locker.locker_id,
+                severity="HIGH",
+                actor_uid=uid,
+                booking_id=locker.active_booking_id,
+            )
+            if alert_id:
+                ALERTS.maybe_send_email(
+                    recipient=recipient,
+                    alert_type="TAMPER",
+                    sector_id=locker.sector_id,
+                    locker_id=locker.locker_id,
+                    actor_uid=uid,
+                    booking_id=locker.active_booking_id,
+                )
+
+        if locker.is_offline and not prev.get("offline"):
+            alert_id = ALERTS.create_alert(
+                alert_type="OFFLINE",
+                sector_id=locker.sector_id,
+                locker_id=locker.locker_id,
+                severity="MEDIUM",
+                actor_uid=uid,
+                booking_id=locker.active_booking_id,
+            )
+            if alert_id:
+                ALERTS.maybe_send_email(
+                    recipient=recipient,
+                    alert_type="OFFLINE",
+                    sector_id=locker.sector_id,
+                    locker_id=locker.locker_id,
+                    actor_uid=uid,
+                    booking_id=locker.active_booking_id,
+                )
+
+        st.session_state.locker_signals[signal_key] = {"tamper": locker.tamper_flag, "offline": locker.is_offline}
+
+
+def overview_page(locker_views: list[LockerView], role: str, sector_id: str | None) -> None:
+    hero("📊 Overview", "Realtime snapshot of availability, uptime, and security posture.")
+    metrics = compute_sector_metrics(locker_views)
+    render_metrics(metrics)
+
+    total = metrics.get("total", 0)
+    online_pct = 0 if total == 0 else round(((total - metrics.get("offline", 0)) / total) * 100, 1)
+    tamper_pct = 0 if total == 0 else round((metrics.get("tampered", 0) / total) * 100, 1)
+
+    left, right = st.columns(2)
+    with left:
+        st.markdown("<div class='droplock-panel'>", unsafe_allow_html=True)
+        st.markdown("#### Health Pulse")
+        st.progress(min(100, int(online_pct)), text=f"Online lockers: {online_pct}%")
+        st.caption(f"Tampered lockers ratio: {tamper_pct}%")
+        st.markdown("</div>", unsafe_allow_html=True)
+    with right:
+        st.markdown("<div class='droplock-panel'>", unsafe_allow_html=True)
+        st.markdown("#### Quick Notes")
+        st.write(f"🧭 Current sector: **{sector_id or 'N/A'}**")
+        st.write(f"🛡️ Role: **{role}**")
+        st.write("💡 Tip: Use **Operations** page for bulk actions and exports.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    alert_rows = ALERTS.list_alerts().values()
+    trend: dict[str, dict[str, int]] = {}
+    for i in range(6, -1, -1):
+        d = (dt.datetime.now(dt.UTC) - dt.timedelta(days=i)).date().isoformat()
+        trend[d] = {"tamper": 0, "offline": 0}
+    for alert in alert_rows:
+        safe = alert or {}
+        created_at = safe.get("createdAt")
+        if not created_at:
+            continue
+        day = dt.datetime.fromtimestamp(created_at / 1000, tz=dt.UTC).date().isoformat()
+        if day not in trend:
+            continue
+        if safe.get("type") == "TAMPER":
+            trend[day]["tamper"] += 1
+        if safe.get("type") == "OFFLINE":
+            trend[day]["offline"] += 1
+
+    st.markdown("#### Tamper / Offline Trends (7 days)")
+    chart_rows = [{"date": day, "tamper": vals["tamper"], "offline": vals["offline"]} for day, vals in trend.items()]
+    st.line_chart(chart_rows, x="date", y=["tamper", "offline"], width="stretch")
+
+
+def sectors_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str | None) -> None:
+    hero("🏙️ Sector Configuration", "Tune heartbeat, pulse timing, and timezone configuration.")
+    if not sector_id:
+        st.info("No sectors found")
+        return
+
+    sector = sectors.get(sector_id, {})
+    config = sector.get("config") or {}
+    st.write("Current config", config)
+
+    if role != "superAdmin":
+        st.info("Read-only for admins. Contact super admin for config changes.")
+        return
+
+    with st.form("sector_config"):
+        heartbeat = st.number_input("heartbeatTimeoutSec", min_value=10, value=int(config.get("heartbeatTimeoutSec", DEFAULT_HEARTBEAT_TIMEOUT_SEC)))
+        pulse = st.number_input("openPulseMs", min_value=50, value=int(config.get("openPulseMs", 500)))
+        timezone = st.text_input("timezone", value=str(config.get("timezone", "UTC")))
+        save = st.form_submit_button("Save config")
+
+    if save:
+        assert_super_admin(uid)
+        update_sector_config(sector_id, {"heartbeatTimeoutSec": int(heartbeat), "openPulseMs": int(pulse), "timezone": timezone})
+        st.success("Sector config updated")
+
+    st.markdown("#### Create Sector")
+    with st.form("create_sector"):
+        new_sector = st.text_input("Sector ID")
+        new_timezone = st.text_input("Timezone", value="UTC")
+        new_heartbeat = st.number_input("Heartbeat timeout (sec)", min_value=10, value=120)
+        new_open_pulse = st.number_input("Open pulse (ms)", min_value=50, value=500)
+        create_submit = st.form_submit_button("Create Sector")
+    if create_submit:
+        assert_super_admin(uid)
+        create_sector(new_sector.strip(), new_timezone.strip(), int(new_heartbeat), int(new_open_pulse))
+        st.success(f"Sector '{new_sector}' created")
+        st.rerun()
+
+
+def operations_page(uid: str, role: str, sectors: dict[str, Any], sector_id: str | None, locker_views: list[LockerView]) -> None:
+    hero("🛠️ Locker Operations", "Filter, update locker state, request OPEN, and export inventory data.")
+    if not sector_id:
+        st.info("No sector selected")
+        return
+
+    effective_sector_id = sector_id
+    if role == "superAdmin":
+        effective_sector_id = st.selectbox("Operations Sector", sorted(sectors.keys())) if sectors else None
+        locker_views = _build_locker_views(effective_sector_id, sectors) if effective_sector_id else []
+
+    if role == "superAdmin" and effective_sector_id:
+        col1, col2, col3 = st.columns([2, 1, 1])
+        locker_id = col1.text_input("Locker ID")
+        if col2.button("Create"):
+            super_create_locker(uid, effective_sector_id, locker_id.strip())
+            st.success("Locker created")
+            st.rerun()
+        if col3.button("Delete"):
+            super_delete_locker(uid, effective_sector_id, locker_id.strip())
+            st.success("Locker deleted")
+            st.rerun()
+
+    filter_cols = st.columns(4)
+    f_booked = filter_cols[0].checkbox("Booked only")
+    f_maintenance = filter_cols[1].checkbox("Maintenance only")
+    f_tampered = filter_cols[2].checkbox("Tampered only")
+    f_offline = filter_cols[3].checkbox("Offline only")
+
+    filtered = locker_views
+    if f_booked:
+        filtered = [l for l in filtered if l.active_booking_id]
+    if f_maintenance:
+        filtered = [l for l in filtered if l.state == "MAINTENANCE"]
+    if f_tampered:
+        filtered = [l for l in filtered if l.tamper_flag]
+    if f_offline:
+        filtered = [l for l in filtered if l.is_offline]
+
+    if not filtered:
+        st.info("No lockers match filters")
+        return
+
+    csv_buffer = io.StringIO()
+    writer = csv.writer(csv_buffer)
+    writer.writerow(["lockerId", "state", "bookingId", "tamper", "offline", "lastHeartbeatAt"])
+
+    for locker in filtered:
+        writer.writerow(
+            [locker.locker_id, locker.state, locker.active_booking_id or "", locker.tamper_flag, locker.is_offline, locker.last_heartbeat_at or ""]
+        )
+
+        st.markdown("<div class='droplock-panel'>", unsafe_allow_html=True)
+        cols = st.columns([1.2, 1, 1, 1, 1.5, 2])
+        cols[0].markdown(f"**{locker.locker_id}**")
+        cols[1].write(format_state(locker))
+        cols[2].write(locker.active_booking_id or "—")
+        cols[3].write(tamper_badge(locker))
+        cols[4].write(format_ts(locker.last_heartbeat_at))
+
+        current_state = "BOOKED" if locker.state == "RESERVED" else locker.state
+        new_state = cols[5].selectbox(
+            "state",
+            LOCKER_STATES,
+            index=LOCKER_STATES.index(current_state) if current_state in LOCKER_STATES else 0,
+            key=f"state_{effective_sector_id}_{locker.locker_id}",
+            label_visibility="collapsed",
+        )
+
+        action_cols = st.columns([1, 1, 1, 3])
+        if action_cols[0].button("Apply", key=f"apply_{locker.locker_id}"):
+            admin_set_state(uid, effective_sector_id, locker.locker_id, new_state)
+            st.success(f"{locker.locker_id} updated")
+            st.rerun()
+        if action_cols[1].button("OPEN", key=f"open_{locker.locker_id}"):
+            cmd_id = admin_request_open(uid, effective_sector_id, locker.locker_id)
+            st.success(f"OPEN requested ({cmd_id})")
+        cancel_disabled = not locker.active_booking_id
+        if action_cols[2].button("CANCEL", key=f"cancel_{locker.locker_id}", disabled=cancel_disabled):
+            cmd_id = admin_request_cancel(uid, effective_sector_id, locker.locker_id)
+            st.success(f"CANCEL requested ({cmd_id})")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    st.download_button("Export CSV", csv_buffer.getvalue(), file_name=f"lockers_{effective_sector_id}.csv", mime="text/csv")
+
+
+def alerts_page(uid: str, role: str, sector_id: str | None) -> None:
+    hero("🚨 Alerts Center", "Review incidents and close the loop from OPEN to ACKED/CLOSED.")
+    alerts = ALERTS.list_alerts()
+    if not alerts:
+        st.info("No alerts")
+        return
+
+    open_count = sum(1 for _, a in alerts.items() if (a or {}).get("status") == "OPEN")
+    ack_count = sum(1 for _, a in alerts.items() if (a or {}).get("status") == "ACKED")
+    closed_count = sum(1 for _, a in alerts.items() if (a or {}).get("status") == "CLOSED")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Open", open_count)
+    c2.metric("Acked", ack_count)
+    c3.metric("Closed", closed_count)
+
+    for alert_id, alert in sorted(alerts.items(), key=lambda i: (i[1] or {}).get("createdAt", 0), reverse=True):
+        safe = alert or {}
+        if sector_id and role == "admin" and safe.get("sectorId") != sector_id:
+            continue
+
+        st.markdown("<div class='droplock-panel'>", unsafe_allow_html=True)
+        cols = st.columns([1, 1, 1, 1, 1.2, 2])
+        cols[0].write(safe.get("type"))
+        cols[1].write(f"{safe.get('sectorId')}/{safe.get('lockerId')}")
+        cols[2].write(safe.get("severity"))
+        cols[3].write(safe.get("status"))
+        cols[4].write(format_ts(safe.get("createdAt")))
+
+        actions = cols[5].columns(2)
+        if role == "superAdmin" and safe.get("status") == "OPEN":
+            if actions[0].button("ACK", key=f"ack_{alert_id}"):
+                ALERTS.update_status(alert_id, "ACKED", uid)
+                st.rerun()
+        if role == "superAdmin" and safe.get("status") in {"OPEN", "ACKED"}:
+            if actions[1].button("Close", key=f"close_{alert_id}"):
+                ALERTS.update_status(alert_id, "CLOSED", uid)
+                st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def admin_mgmt_page(uid: str, role: str, sectors: dict[str, Any]) -> None:
+    hero("👥 Admin Management", "Provision, suspend, reactivate, and reset access safely.")
+    if role != "superAdmin":
+        st.error("SuperAdmin only")
+        return
+
+    with st.form("create_admin"):
+        email = st.text_input("Admin Email")
+        temp_password = st.text_input("Temporary Password", type="password")
+        name = st.text_input("Display Name")
+        sector_id = st.selectbox("Assign Sector", sorted(sectors.keys()) if sectors else [])
+        submit = st.form_submit_button("Create Admin")
+    if submit:
+        assert_super_admin(uid)
+        new_uid = provision_admin(email.strip(), temp_password.strip(), sector_id, name.strip())
+        st.success(f"Admin created ({new_uid})")
+
+    admins = list_admin_profiles()
+    for admin_uid, profile in admins.items():
+        st.markdown("<div class='droplock-panel'>", unsafe_allow_html=True)
+        cols = st.columns([1.5, 1, 1, 2])
+        cols[0].write(profile.get("email"))
+        cols[1].write(profile.get("status", "active"))
+        cols[2].write(profile.get("sectorId"))
+
+        actions = cols[3].columns(3)
+        if profile.get("status") == "active":
+            if actions[0].button("Disable", key=f"disable_{admin_uid}"):
+                set_admin_status(admin_uid, "disabled")
+                st.rerun()
+        else:
+            if actions[0].button("Reactivate", key=f"reactivate_{admin_uid}"):
+                set_admin_status(admin_uid, "active")
+                st.rerun()
+
+        if actions[1].button("Reset Password", key=f"reset_{admin_uid}"):
+            temp = reset_admin_password(admin_uid)
+            st.warning(f"Temporary password for {admin_uid}: {temp}")
+        st.markdown("</div>", unsafe_allow_html=True)
+
+
+def activity_page(uid: str, role: str, sector_id: str | None) -> None:
+    hero("🧾 Activity Feed", "Recent admin command execution logs for quick auditing.")
+    init_firebase()
+
+    def _safe_ms(value: Any) -> int | None:
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str) and value.isdigit():
+            return int(value)
+        return None
+
+    command_rows: list[dict[str, Any]] = []
+    profiles_raw = db.reference("profiles").get() or {}
+    profiles = profiles_raw if isinstance(profiles_raw, dict) else {}
+    name_map = {pid: (pdata or {}).get("displayName") or pid for pid, pdata in profiles.items()}
+
+    command_tree_raw = db.reference("adminCommandLogs").get() or {}
+    command_tree = command_tree_raw if isinstance(command_tree_raw, dict) else {}
+    for cmd_sector, lockers in command_tree.items():
+        if role == "admin" and sector_id and cmd_sector != sector_id:
+            continue
+        if not isinstance(lockers, dict):
+            continue
+        for locker_id, commands in lockers.items():
+            if not isinstance(commands, dict):
+                continue
+            for cmd_id, payload in commands.items():
+                safe = payload or {}
+                if not isinstance(safe, dict):
+                    continue
+                if safe.get("cmd") not in {"OPEN", "CANCEL"}:
+                    continue
+                actor_uid = safe.get("actorUid")
+                requested_at_ms = _safe_ms(safe.get("requestedAt"))
+                executed_at_ms = _safe_ms(safe.get("executedAt"))
+                if role == "admin" and actor_uid != uid:
+                    continue
+                command_rows.append(
+                    {
+                        "sector": cmd_sector,
+                        "locker": locker_id,
+                        "status": safe.get("status"),
+                        "cmd": safe.get("cmd"),
+                        "actor": name_map.get(actor_uid, actor_uid),
+                        "actorUid": actor_uid,
+                        "requestedAt": format_ts(requested_at_ms),
+                        "executedAt": format_ts(executed_at_ms),
+                        "_requestedAtMs": requested_at_ms,
+                        "bookingId": safe.get("bookingId"),
+                        "id": cmd_id,
+                    }
+                )
+
+    if command_rows:
+        command_rows = sorted(command_rows, key=lambda c: c.get("_requestedAtMs") or 0, reverse=True)[:50]
+        for row in command_rows:
+            row.pop("_requestedAtMs", None)
+        if role == "superAdmin":
+            st.markdown("#### Latest admin commands from all admins (including super admin)")
+        else:
+            st.markdown("#### Latest admin commands submitted by you")
+        st.dataframe(command_rows, width="stretch")
+    else:
+        st.info("No admin command execution logs found")
+
+
+
+def account_page(profile: dict[str, Any]) -> None:
+    hero("🔑 Account Settings", "Change your account password.")
+
+    with st.form("change_password"):
+        current_password = st.text_input("Current Password", type="password")
+        new_password = st.text_input("New Password", type="password")
+        confirm_password = st.text_input("Confirm New Password", type="password")
+        submit = st.form_submit_button("Update Password")
+
+    if not submit:
+        return
+
+    email = profile.get("email")
+    if not email:
+        st.error("Your profile is missing an email address.")
+        return
+
+    if new_password != confirm_password:
+        st.error("New password and confirmation must match.")
+        return
+
+    if len(new_password) < 8:
+        st.error("New password must be at least 8 characters.")
+        return
+
+    try:
+        sign_in(email, current_password)
+        result = change_password(st.session_state.idToken, new_password)
+        st.session_state.idToken = result.get("idToken", st.session_state.idToken)
+        st.success("Password updated successfully.")
+    except Exception as exc:
+        st.error(str(exc))
+
+
+def _suggestions_file_path() -> Path:
+    return Path(__file__).resolve().parent / "IMPROVEMENT_IDEAS.txt"
+
+
+def improvement_ideas_page(profile: dict[str, Any]) -> None:
+    role = profile.get("role")
+    display_name = profile.get("displayName") or profile.get("email") or "Unknown User"
+    ideas_file = _suggestions_file_path()
+
+    hero("🧠 Improvement Ideas", "Capture improvement suggestions from admins.")
+
+    with st.form("submit_idea"):
+        suggestion = st.text_area("Share an improvement idea", height=180, placeholder="Describe your idea...")
+        submit = st.form_submit_button("Submit Idea")
+
+    if submit:
+        cleaned = suggestion.strip()
+        if not cleaned:
+            st.error("Suggestion cannot be empty.")
+        else:
+            timestamp = dt.datetime.now(dt.UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
+            entry = f"[{timestamp}] {display_name}:\n{cleaned}\n\n"
+            ideas_file.parent.mkdir(parents=True, exist_ok=True)
+            with ideas_file.open("a", encoding="utf-8") as handle:
+                handle.write(entry)
+            st.success("Suggestion saved.")
+
+    if role == "superAdmin":
+        if ideas_file.exists():
+            st.text_area("All submitted ideas", ideas_file.read_text(encoding="utf-8"), height=400)
+        else:
+            st.info("No ideas submitted yet.")
+    else:
+        st.caption("Suggestions are appended to a shared file. Only super admins can view all submissions.")
+
+def help_page() -> None:
+    hero("🧠 Modules & Improvement Ideas", "Project structure notes plus practical next steps for UX and reliability.")
+    notes_file = Path(__file__).resolve().parent / "MODULE_GUIDE.txt"
+    if notes_file.exists():
+        st.text_area("Module notes", notes_file.read_text(encoding="utf-8"), height=500)
+    else:
+        st.warning("MODULE_GUIDE.txt not found")
+
+
+def dashboard() -> None:
+    init_firebase()
+    uid = st.session_state.uid
+    profile = st.session_state.profile
+    role = profile.get("role")
+
+    sectors = load_all_sectors()
+    sector_id = _selected_sector(profile, sectors)
+
+    theme_dark = st.sidebar.toggle("🌗 Dark mode", value=st.session_state.theme == "dark")
+    selected_theme = "dark" if theme_dark else "light"
+    if selected_theme != st.session_state.theme:
+        st.session_state.theme = selected_theme
+        st.rerun()
+
+    st.sidebar.write(f"Admin: {profile.get('displayName') or uid}")
+    st.sidebar.write(f"Role: {role}")
+    st.sidebar.write(f"Assigned Sector: {profile.get('sectorId')}")
+    if st.sidebar.button("Logout"):
+        for key in ("idToken", "uid", "profile"):
+            st.session_state[key] = None
+        st.rerun()
+
+    pages = ["Overview", "Sector Config", "Operations", "Alerts Center", "Activity Feed", "Account Settings", "Improvement Ideas"]
+    if role == "superAdmin":
+        pages.insert(4, "Admin Management")
+    page = st.sidebar.radio("Navigation", pages)
+
+    locker_views = _build_locker_views(sector_id, sectors) if sector_id else []
+    _trigger_derived_alerts(uid, locker_views)
+
+    if page == "Overview":
+        overview_page(locker_views, role, sector_id)
+    elif page == "Sector Config":
+        sectors_page(uid, role, sectors, sector_id)
+    elif page == "Operations":
+        operations_page(uid, role, sectors, sector_id, locker_views)
+    elif page == "Alerts Center":
+        alerts_page(uid, role, sector_id)
+    elif page == "Admin Management":
+        admin_mgmt_page(uid, role, sectors)
+    elif page == "Activity Feed":
+        activity_page(uid, role, sector_id)
+    elif page == "Account Settings":
+        account_page(profile)
+    elif page == "Improvement Ideas":
+        improvement_ideas_page(profile)
+
+
+def main() -> None:
+    ensure_session()
+    inject_global_styles(st.session_state.theme)
+    if not st.session_state.idToken:
+        login_view()
+    else:
+        dashboard()
+
+
+if __name__ == "__main__":
+    main()

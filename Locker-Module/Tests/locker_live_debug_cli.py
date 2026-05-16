@@ -64,6 +64,8 @@ def main() -> int:
     GPIO.setmode(GPIO.BCM)
 
     locker_manager = LockerManager.from_configs(build_default_locker_configs())
+    startup_open_status = locker_manager.open_all()
+    logger.info("Startup locker open status: %s", startup_open_status)
 
     try:
         calibration_status = _run_manual_weight_calibration(locker_manager)

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import ssl
 import threading
 import time
@@ -52,6 +53,9 @@ class DropLockController:
     def _cmd_topic(self, locker_id: str) -> str:
         return f"droplock/{self.cfg.sector_id}/{locker_id}/cmd"
 
+    def _admin_cmd_topic(self) -> str:
+        return f"droplock/{self.cfg.sector_id}/admin/cmd"
+
     def _event_topic(self, locker_id: str) -> str:
         return f"droplock/{self.cfg.sector_id}/{locker_id}/events"
 
@@ -97,6 +101,24 @@ class DropLockController:
                 },
             )
 
+    def _unlock_duration_seconds(self, cmd: dict, default: float = 1.0) -> float:
+        raw_duration = cmd.get("unlockDurationSeconds", default)
+        if raw_duration is None:
+            logger.warning("Invalid unlockDurationSeconds=None; using default=%s", default)
+            return default
+
+        try:
+            unlock_duration = float(raw_duration)
+        except (TypeError, ValueError):
+            logger.warning("Invalid unlockDurationSeconds=%r; using default=%s", raw_duration, default)
+            return default
+
+        if not math.isfinite(unlock_duration):
+            logger.warning("Invalid unlockDurationSeconds=%r; using default=%s", raw_duration, default)
+            return default
+
+        return unlock_duration
+
     def handle_open(self, locker_id: str, cmd: dict):
         locker = self.lockers.get_locker(locker_id)
         request_id = cmd.get("requestId", "")
@@ -104,7 +126,8 @@ class DropLockController:
             logger.warning("OPEN for unknown locker_id=%s", locker_id)
             return
 
-        locker.unlock()
+        unlock_duration = self._unlock_duration_seconds(cmd)
+        locker.unlock(duration=unlock_duration)
 
         self.publish_event(
             locker_id,
@@ -183,6 +206,9 @@ class DropLockController:
 
     def on_connect(self, client: mqtt.Client, userdata, flags, reason_code, properties=None):
         logger.info("Connected to MQTT rc=%s", reason_code)
+        admin_topic = self._admin_cmd_topic()
+        logger.info("Subscribing to %s", admin_topic)
+        client.subscribe(admin_topic, qos=1)
         for locker_id in self.lockers.lockers.keys():
             topic = self._cmd_topic(locker_id)
             logger.info("Subscribing to %s", topic)
@@ -198,14 +224,33 @@ class DropLockController:
             return None
         if parts[0] != "droplock" or parts[1] != self.cfg.sector_id or parts[3] != "cmd":
             return None
+        if parts[2] == "admin":
+            return None
         return parts[2]
 
-    def on_message(self, client: mqtt.Client, userdata, msg):
-        locker_id = self._locker_id_from_topic(msg.topic)
-        if locker_id is None:
-            logger.warning("Ignoring message on unexpected topic=%s", msg.topic)
-            return
+    def _is_admin_topic(self, topic: str) -> bool:
+        return topic == self._admin_cmd_topic()
 
+    def _admin_target_locker_ids(self, cmd: dict):
+        if cmd.get("all") is True:
+            return list(self.lockers.lockers.keys())
+
+        locker_ids = cmd.get("lockerIds")
+        if isinstance(locker_ids, list):
+            return [locker_id for locker_id in locker_ids if isinstance(locker_id, str)]
+
+        locker_id = cmd.get("lockerId")
+        if isinstance(locker_id, str) and locker_id:
+            return [locker_id]
+
+        logger.warning("Ignoring admin OPEN without explicit target or all=true payload=%s", cmd)
+        return []
+
+    def handle_admin_open(self, cmd: dict):
+        for locker_id in self._admin_target_locker_ids(cmd):
+            self.handle_open(locker_id, cmd)
+
+    def on_message(self, client: mqtt.Client, userdata, msg):
         try:
             cmd = json.loads(msg.payload.decode("utf-8"))
         except json.JSONDecodeError:
@@ -213,6 +258,20 @@ class DropLockController:
             return
 
         cmd_type = cmd.get("type")
+
+        if self._is_admin_topic(msg.topic):
+            logger.info("Received admin cmd type=%s payload=%s", cmd_type, cmd)
+            if cmd_type == "OPEN":
+                self.handle_admin_open(cmd)
+            else:
+                logger.warning("Ignoring unsupported admin cmd type=%s", cmd_type)
+            return
+
+        locker_id = self._locker_id_from_topic(msg.topic)
+        if locker_id is None:
+            logger.warning("Ignoring message on unexpected topic=%s", msg.topic)
+            return
+
         logger.info("Received cmd locker=%s type=%s payload=%s", locker_id, cmd_type, cmd)
         if cmd_type == "OPEN":
             self.handle_open(locker_id, cmd)
@@ -340,6 +399,8 @@ def main() -> int:
     GPIO.setmode(GPIO.BCM)
 
     locker_manager = LockerManager.from_configs(build_default_locker_configs())
+    startup_open_status = locker_manager.open_all()
+    logger.info("Startup locker open status: %s", startup_open_status)
     calibration_status = _run_manual_weight_calibration(locker_manager)
     logger.info("Manual weight sensor calibration status: %s", calibration_status)
 

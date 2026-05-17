@@ -141,6 +141,14 @@ class LockerManager:
     def get_locker(self, locker_id: str) -> Optional[Locker]:
         return self.lockers.get(locker_id)
 
+    def open_all(self, duration=1.0):
+        open_status = {}
+        for locker_id, locker in self.lockers.items():
+            logger.info("Opening locker %s", locker_id)
+            locker.unlock(duration=duration)
+            open_status[locker_id] = True
+        return open_status
+
     def calibrate_weight_sensors(self):
         calibration_status = {}
         for locker_id, locker in self.lockers.items():

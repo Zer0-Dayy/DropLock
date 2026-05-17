@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import ssl
 import threading
 import time
@@ -100,6 +101,24 @@ class DropLockController:
                 },
             )
 
+    def _unlock_duration_seconds(self, cmd: dict, default: float = 1.0) -> float:
+        raw_duration = cmd.get("unlockDurationSeconds", default)
+        if raw_duration is None:
+            logger.warning("Invalid unlockDurationSeconds=None; using default=%s", default)
+            return default
+
+        try:
+            unlock_duration = float(raw_duration)
+        except (TypeError, ValueError):
+            logger.warning("Invalid unlockDurationSeconds=%r; using default=%s", raw_duration, default)
+            return default
+
+        if not math.isfinite(unlock_duration):
+            logger.warning("Invalid unlockDurationSeconds=%r; using default=%s", raw_duration, default)
+            return default
+
+        return unlock_duration
+
     def handle_open(self, locker_id: str, cmd: dict):
         locker = self.lockers.get_locker(locker_id)
         request_id = cmd.get("requestId", "")
@@ -107,7 +126,7 @@ class DropLockController:
             logger.warning("OPEN for unknown locker_id=%s", locker_id)
             return
 
-        unlock_duration = float(cmd.get("unlockDurationSeconds", 1.0))
+        unlock_duration = self._unlock_duration_seconds(cmd)
         locker.unlock(duration=unlock_duration)
 
         self.publish_event(
@@ -224,7 +243,8 @@ class DropLockController:
         if isinstance(locker_id, str) and locker_id:
             return [locker_id]
 
-        return list(self.lockers.lockers.keys())
+        logger.warning("Ignoring admin OPEN without explicit target or all=true payload=%s", cmd)
+        return []
 
     def handle_admin_open(self, cmd: dict):
         for locker_id in self._admin_target_locker_ids(cmd):

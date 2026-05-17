@@ -1,5 +1,8 @@
 import sys
 import types
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 
 def _install_gpio_hx_mocks():
@@ -88,3 +91,102 @@ def test_tamper_when_expected_closed_but_sensor_open():
 
     assert locker.evaluate_tamper() is True
     assert locker.state == LockerState.TAMPER
+
+
+def test_locker_manager_open_all_unlocks_each_locker():
+    _install_gpio_hx_mocks()
+    from Locker_Module import LockerConfig, LockerManager, LockerState
+
+    manager = LockerManager.from_configs(
+        [
+            LockerConfig(locker_id="Locker 1", relay_pin=17, door_pin=27, mc38_pin=23),
+            LockerConfig(locker_id="Locker 2", relay_pin=18, door_pin=22, mc38_pin=24),
+        ]
+    )
+
+    status = manager.open_all(duration=0)
+
+    assert status == {"Locker 1": True, "Locker 2": True}
+    assert all(locker.state == LockerState.OPEN for locker in manager.lockers.values())
+    assert all(locker.expected_closed is False for locker in manager.lockers.values())
+
+
+def _install_paho_mock():
+    for mod in ["main", "paho", "paho.mqtt", "paho.mqtt.client"]:
+        sys.modules.pop(mod, None)
+
+    paho = types.ModuleType("paho")
+    mqtt_pkg = types.ModuleType("paho.mqtt")
+    client_mod = types.ModuleType("paho.mqtt.client")
+
+    class CallbackAPIVersion:
+        VERSION2 = 2
+
+    class Client:
+        def __init__(self, callback_api_version=None, client_id=None):
+            self.callback_api_version = callback_api_version
+            self.client_id = client_id
+            self.published = []
+            self.subscriptions = []
+            self.on_connect = None
+            self.on_disconnect = None
+            self.on_message = None
+
+        def tls_set(self, *args, **kwargs):
+            return None
+
+        def tls_insecure_set(self, *args, **kwargs):
+            return None
+
+        def reconnect_delay_set(self, *args, **kwargs):
+            return None
+
+        def subscribe(self, topic, qos=0):
+            self.subscriptions.append((topic, qos))
+
+        def publish(self, topic, payload=None, qos=0, retain=False):
+            self.published.append((topic, payload, qos, retain))
+
+        def connect(self, *args, **kwargs):
+            return None
+
+        def loop_start(self):
+            return None
+
+        def loop_stop(self):
+            return None
+
+        def disconnect(self):
+            return None
+
+    client_mod.CallbackAPIVersion = CallbackAPIVersion
+    client_mod.Client = Client
+    mqtt_pkg.client = client_mod
+    paho.mqtt = mqtt_pkg
+    sys.modules["paho"] = paho
+    sys.modules["paho.mqtt"] = mqtt_pkg
+    sys.modules["paho.mqtt.client"] = client_mod
+
+
+def test_admin_open_command_opens_target_locker():
+    _install_gpio_hx_mocks()
+    _install_paho_mock()
+    from Locker_Module import LockerConfig, LockerManager, LockerState
+    from main import DropLockController, MqttConfig
+
+    manager = LockerManager.from_configs(
+        [
+            LockerConfig(locker_id="Locker 1", relay_pin=17, door_pin=27, mc38_pin=23),
+            LockerConfig(locker_id="Locker 2", relay_pin=18, door_pin=22, mc38_pin=24),
+        ]
+    )
+    controller = DropLockController(MqttConfig(tls_enabled=False), manager)
+    controller._start_weight_stream = lambda locker_id, request_id: None
+
+    controller.handle_admin_open(
+        {"type": "OPEN", "requestId": "admin-1", "lockerId": "Locker 2", "unlockDurationSeconds": 0}
+    )
+
+    assert manager.get_locker("Locker 1").state == LockerState.CLOSED
+    assert manager.get_locker("Locker 2").state == LockerState.OPEN
+    assert any('"type":"OPEN_ACK"' in payload for _, payload, _, _ in controller.client.published)

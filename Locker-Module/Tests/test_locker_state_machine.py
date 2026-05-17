@@ -190,3 +190,99 @@ def test_admin_open_command_opens_target_locker():
     assert manager.get_locker("Locker 1").state == LockerState.CLOSED
     assert manager.get_locker("Locker 2").state == LockerState.OPEN
     assert any('"type":"OPEN_ACK"' in payload for _, payload, _, _ in controller.client.published)
+
+
+def _build_test_controller():
+    _install_gpio_hx_mocks()
+    _install_paho_mock()
+    from Locker_Module import LockerConfig, LockerManager
+    from main import DropLockController, MqttConfig
+
+    manager = LockerManager.from_configs(
+        [
+            LockerConfig(locker_id="Locker 1", relay_pin=17, door_pin=27, mc38_pin=23),
+            LockerConfig(locker_id="Locker 2", relay_pin=18, door_pin=22, mc38_pin=24),
+        ]
+    )
+    controller = DropLockController(MqttConfig(tls_enabled=False), manager)
+    controller._start_weight_stream = lambda locker_id, request_id: None
+    return controller, manager
+
+
+def test_open_command_with_null_unlock_duration_uses_default_and_acknowledges():
+    import json
+
+    controller, manager = _build_test_controller()
+    from Locker_Module import LockerState
+    durations = []
+
+    def unlock(duration=1.0):
+        durations.append(duration)
+        locker = manager.get_locker("Locker 1")
+        locker.state = LockerState.OPEN
+        locker.expected_closed = False
+
+    manager.get_locker("Locker 1").unlock = unlock
+
+    class Msg:
+        topic = "droplock/S1/Locker 1/cmd"
+        payload = json.dumps(
+            {"type": "OPEN", "requestId": "open-null", "unlockDurationSeconds": None}
+        ).encode("utf-8")
+
+    controller.on_message(controller.client, None, Msg())
+
+    assert durations == [1.0]
+    assert manager.get_locker("Locker 1").state == LockerState.OPEN
+    assert any('"type":"OPEN_ACK"' in payload for _, payload, _, _ in controller.client.published)
+
+
+def test_admin_open_command_with_non_numeric_unlock_duration_uses_default_and_acknowledges():
+    controller, manager = _build_test_controller()
+    from Locker_Module import LockerState
+    durations = []
+
+    def unlock(duration=1.0):
+        durations.append(duration)
+        locker = manager.get_locker("Locker 2")
+        locker.state = LockerState.OPEN
+        locker.expected_closed = False
+
+    manager.get_locker("Locker 2").unlock = unlock
+
+    controller.handle_admin_open(
+        {
+            "type": "OPEN",
+            "requestId": "admin-bad-duration",
+            "lockerId": "Locker 2",
+            "unlockDurationSeconds": "not-a-number",
+        }
+    )
+
+    assert durations == [1.0]
+    assert manager.get_locker("Locker 1").state == LockerState.CLOSED
+    assert manager.get_locker("Locker 2").state == LockerState.OPEN
+    assert any('"type":"OPEN_ACK"' in payload for _, payload, _, _ in controller.client.published)
+
+
+def test_admin_open_without_explicit_target_does_not_open_all_lockers():
+    controller, manager = _build_test_controller()
+    from Locker_Module import LockerState
+
+    controller.handle_admin_open({"type": "OPEN"})
+
+    assert manager.get_locker("Locker 1").state == LockerState.CLOSED
+    assert manager.get_locker("Locker 2").state == LockerState.CLOSED
+    assert controller.client.published == []
+
+
+def test_admin_open_all_true_still_opens_all_lockers():
+    controller, manager = _build_test_controller()
+    from Locker_Module import LockerState
+    for locker in manager.lockers.values():
+        locker.unlock = lambda duration=1.0, locker=locker: setattr(locker, "state", LockerState.OPEN)
+
+    controller.handle_admin_open({"type": "OPEN", "all": True, "unlockDurationSeconds": 0})
+
+    assert manager.get_locker("Locker 1").state == LockerState.OPEN
+    assert manager.get_locker("Locker 2").state == LockerState.OPEN

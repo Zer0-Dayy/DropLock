@@ -351,9 +351,10 @@ class DropLockController:
 
 
 def build_default_locker_configs():
-    # Locker-1 exists today; layout is ready to scale to 4 lockers.
+    # Default deployment now includes two lockers; layout still supports up to 4.
     return [
         LockerConfig(locker_id="Locker 1", relay_pin=17, door_pin=27, mc38_pin=23),
+        LockerConfig(locker_id="Locker 2", relay_pin=18, door_pin=22, mc38_pin=24),
     ]
 
 

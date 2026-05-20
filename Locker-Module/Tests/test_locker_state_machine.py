@@ -286,3 +286,13 @@ def test_admin_open_all_true_still_opens_all_lockers():
 
     assert manager.get_locker("Locker 1").state == LockerState.OPEN
     assert manager.get_locker("Locker 2").state == LockerState.OPEN
+
+
+def test_build_default_locker_configs_contains_two_lockers():
+    _install_gpio_hx_mocks()
+    _install_paho_mock()
+    from main import build_default_locker_configs
+
+    configs = build_default_locker_configs()
+
+    assert [cfg.locker_id for cfg in configs] == ["Locker 1", "Locker 2"]

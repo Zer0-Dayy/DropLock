@@ -96,6 +96,16 @@ The locker module runs near the physical lockers, typically on Raspberry Pi-comp
 - Publishes heartbeat, tamper, open, close, and weight events.
 - Accepts MQTT commands from the tablet or admin flow.
 
+#### Locker module pinout
+
+`LockerConfig` defines default HX711 pins as `weight_data_pin=6` and `weight_clock_pin=5`. In the default two-locker setup, `Locker 1` uses those defaults, while `Locker 2` explicitly overrides them to `weight_data_pin=19` and `weight_clock_pin=26`.
+
+| Locker | Relay pin | Door sensor pin | MC38 pin | HX711 DOUT (data) | HX711 SCK (clock) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Locker 1 | 17 | 27 | 23 | 6 (default) | 5 (default) |
+| Locker 2 | 18 | 22 | 24 | 19 (override) | 26 (override) |
+
+
 ## Delivery lifecycle
 
 1. **Checkout** — customer chooses locker delivery on a participating website.
